@@ -150,7 +150,7 @@ def path_patching(model, data_batches, sender_head, receiver_nodes, metric_fn) -
         del patched_logits
         clear_cache()
 
-        metric_diff = treatment_metric - patched_metric
+        metric_diff = (treatment_metric - patched_metric) / treatment_metric
 
         # Report the metric values per prompt along with mean and standard deviation for the batch
         results[i] = {

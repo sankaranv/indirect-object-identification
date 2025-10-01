@@ -1,11 +1,15 @@
-from patching import path_patching
+from patching import path_patching, logit_diff_metric
 from typing import List, Dict, Callable, Tuple, Union
 from nnsight import LanguageModel
 import torch
 from tqdm import tqdm
 from utils import clear_cache
-import math
+import numpy as np
+import pandas as pd
 import einops
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import os
 
 
 def compute_head_to_logit_effects(
@@ -120,11 +124,16 @@ def compute_logit_lens_on_target_tokens(
     model: LanguageModel,
     data_batches: List[Dict],
     target_token: str,
-    write_position: int,
+    write_position: str = "END",
 ) -> Dict[Tuple[int, int], float]:
     """
     Compute the average logit lens score for the target token at the write position.
     """
+
+    if write_position == "END":
+        write_position_idx = -1
+    else:
+        raise ValueError(f"Write position {write_position} not supported")
 
     # Get the unembedding vector for the target token
     tokenizer = model.tokenizer
@@ -156,7 +165,7 @@ def compute_logit_lens_on_target_tokens(
         for layer, layer_output in layer_outputs.items():
 
             # Obtain the output of the attention module at the write position
-            heads_output = layer_output[:, write_position, :].reshape(
+            heads_output = layer_output[:, write_position_idx, :].reshape(
                 batch_size, n_head, d_head
             )
 
@@ -311,5 +320,176 @@ def copy_score(
     return copy_scores
 
 
-def find_name_movers():
-    pass
+def find_name_movers(
+    model: LanguageModel,
+    data_batches: List[Dict],
+    causal_effect_threshold: float = 0.01,
+    attn_prob_threshold: float = 0.4,
+    copy_score_threshold: float = 0.95,
+    load_path_patching_results: bool = True,
+):
+    """
+    Find name movers in the model.
+    """
+
+    # Check if the causal effect scores have already been computed
+    if (
+        os.path.exists("results/name_movers/head_to_logits_causal_effect.csv")
+        and load_path_patching_results
+    ):
+        head_effects_df = pd.read_csv(
+            "results/name_movers/head_to_logits_causal_effect.csv"
+        )
+        head_effects = {
+            (int(layer), int(head)): -effect
+            for layer, head, effect in head_effects_df.values
+        }
+    else:
+        print("Computing causal effects of each head on the logits")
+        head_effects = compute_head_to_logit_effects(
+            model, data_batches, logit_diff_metric
+        )
+        head_effects_df = pd.DataFrame(
+            [(layer, head, effect) for (layer, head), effect in head_effects.items()],
+            columns=["layer", "head", "causal_effect"],
+        )
+        if not os.path.exists("results/name_movers"):
+            os.makedirs("results/name_movers")
+        head_effects_df.to_csv(
+            "results/name_movers/head_to_logits_causal_effect.csv", index=False
+        )
+
+    # Find heads with the highest causal effect on the logits
+    candidate_heads = [
+        (layer, head)
+        for layer, head in head_effects.keys()
+        if abs(head_effects[(layer, head)]) > causal_effect_threshold
+    ]
+
+    # Obtain attention probabilities for the IO and S2 tokens
+    print("Computing attention probabilities for the IO and S2 tokens")
+    io_attention_probs = compute_attention_probs_on_input_tokens(
+        model, data_batches, "IO", "END"
+    )
+    s2_attention_probs = compute_attention_probs_on_input_tokens(
+        model, data_batches, "S2", "END"
+    )
+
+    # Obtain logit projections for the IO and S2 tokens
+    print("Computing logit projections for the IO and S2 tokens")
+    io_logit_projections = compute_logit_lens_on_target_tokens(
+        model, data_batches, "IO", "END"
+    )
+    s2_logit_projections = compute_logit_lens_on_target_tokens(
+        model, data_batches, "S2", "END"
+    )
+
+    # Filter out heads with attention probability below the threshold for both the IO and S2 tokens
+    candidate_heads = [
+        (layer, head)
+        for layer, head in candidate_heads
+        if io_attention_probs[(layer, head)] > attn_prob_threshold
+        or s2_attention_probs[(layer, head)] > attn_prob_threshold
+    ]
+
+    # Compute the copy score for the candidate heads and filter out heads with copy score below the threshold
+    print("Computing copy scores for all heads")
+    copy_scores = copy_score(model, data_batches, target_token_type=["IO"])
+    candidate_heads = [
+        (layer, head)
+        for layer, head in candidate_heads
+        if copy_scores[(layer, head)] > copy_score_threshold
+    ]
+
+    # Print the remaining candidate heads we will declare as name movers
+    print(f"Name movers: {candidate_heads}")
+
+    # Plot heatmap of head effects on logit difference
+    print("Plotting head effects as a heatmap")
+    head_effects_array = np.zeros((len(model.transformer.h), model.config.n_head))
+    for layer, head in head_effects.keys():
+        head_effects_array[layer, head] = head_effects[(layer, head)]
+    plt.figure(figsize=(10, 10))
+    vmax = np.max(np.abs(head_effects_array))
+    norm = mcolors.TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+    plt.imshow(head_effects_array, cmap="RdBu", norm=norm)
+    plt.colorbar()
+    plt.xticks(range(model.config.n_head), range(model.config.n_head))
+    plt.yticks(range(len(model.transformer.h)), range(len(model.transformer.h)))
+    plt.xlabel("Head")
+    plt.ylabel("Layer")
+    plt.title("Direct effect of heads on logit difference")
+    if not os.path.exists("plots/name_movers"):
+        os.makedirs("plots/name_movers")
+    plt.savefig("plots/name_movers/head_to_logits_causal_effect.png")
+    plt.close()
+
+    s2_correlation_coeffs = {}
+    io_correlation_coeffs = {}
+
+    # Scatterplot for attention probability vs. logit lens scores for the IO token
+    for layer, head in candidate_heads:
+        plt.scatter(
+            io_attention_probs[(layer, head)], io_logit_projections[(layer, head)]
+        )
+        io_correlation_coeffs[layer, head] = np.corrcoef(
+            io_attention_probs[(layer, head)], io_logit_projections[(layer, head)]
+        )[0, 1]
+        plt.xlabel("Attention Probability on IO token")
+        plt.ylabel("Logit Lens score for IO token")
+        plt.title(
+            f"Head ({layer}, {head}): attention probability vs. logit lens score for IO token (correlation: {io_correlation_coeffs[(layer, head)]:.2f})"
+        )
+        if not os.path.exists("plots/name_movers"):
+            os.makedirs("plots/name_movers")
+        plt.savefig(
+            f"plots/name_movers/IO_attention_prob_vs_logit_lens_{layer}_{head}.png"
+        )
+        plt.close()
+
+    # Scatterplot for attention probability vs. logit lens scores for the S token
+    for layer, head in candidate_heads:
+        plt.scatter(
+            s2_attention_probs[(layer, head)], s2_logit_projections[(layer, head)]
+        )
+        s2_correlation_coeffs[layer, head] = np.corrcoef(
+            s2_attention_probs[(layer, head)], s2_logit_projections[(layer, head)]
+        )[0, 1]
+        plt.xlabel("Attention Probability on S token")
+        plt.ylabel("Logit Lens score for S token")
+        plt.title(
+            f"Head ({layer}, {head}): attention probability vs. logit lens score for S token (correlation: {s2_correlation_coeffs[(layer, head)]:.2f})"
+        )
+        plt.savefig(
+            f"plots/name_movers/S_attention_prob_vs_logit_lens_{layer}_{head}.png"
+        )
+        plt.close()
+
+    # Create results table with scores for the candidate heads
+    results_table = pd.DataFrame(
+        {
+            "layer": [layer for layer, _ in candidate_heads],
+            "head": [head for _, head in candidate_heads],
+            "causal_effect": [
+                head_effects[(layer, head)] for layer, head in candidate_heads
+            ],
+            "io_attention_prob": [
+                io_attention_probs[(layer, head)] for layer, head in candidate_heads
+            ],
+            "s2_attention_prob": [
+                s2_attention_probs[(layer, head)] for layer, head in candidate_heads
+            ],
+            "attn_prob_vs_logit_lens_io_correlation": [
+                io_correlation_coeffs[(layer, head)] for layer, head in candidate_heads
+            ],
+            "attn_prob_vs_logit_lens_s2_correlation": [
+                s2_correlation_coeffs[(layer, head)] for layer, head in candidate_heads
+            ],
+            "copy_score": [
+                copy_scores[(layer, head)] for layer, head in candidate_heads
+            ],
+        }
+    )
+    results_table.to_csv(
+        "results/name_movers/selected_name_mover_heads.csv", index=False
+    )
