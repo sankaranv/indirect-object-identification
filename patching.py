@@ -1,5 +1,6 @@
 import torch
 from typing import Dict
+from utils import clear_cache
 
 
 def logit_diff_metric(
@@ -45,17 +46,20 @@ def path_patching(model, data_batches, sender_head, receiver_nodes, metric_fn) -
         correct_answer_token_ids = batch["correct_answer_token_ids"]
         incorrect_answer_token_ids = batch["incorrect_answer_token_ids"]
 
-        # Get activations on the baseline input
+        # Get activations of the sender headon the baseline input
         with model.trace(baseline_inputs) as baseline_run_tracer:
-            baseline_head_outputs = [
-                model.transformer.h[l].attn.c_proj.input.save() for l in range(n_layers)
-            ].save()
+            baseline_sender_output = model.transformer.h[
+                sender_layer_idx
+            ].attn.c_proj.input.save()
 
-        # Get activations and compute the metric under treatment
+        # Get activations for all layers on the treatment input and compute the metric under treatment
+        treatment_sender_outputs = {}
         with model.trace(treatment_inputs) as treatment_run_tracer:
-            treatment_head_outputs = [
-                model.transformer.h[l].attn.c_proj.input.save() for l in range(n_layers)
-            ].save()
+            for l in range(n_layers):
+                if l != sender_layer_idx:
+                    treatment_sender_outputs[l] = model.transformer.h[
+                        l
+                    ].attn.c_proj.input.save()
             treatment_logits = model.lm_head.output.save()
 
         treatment_metric = metric_fn(
@@ -63,6 +67,10 @@ def path_patching(model, data_batches, sender_head, receiver_nodes, metric_fn) -
             correct_answer_token_ids,
             incorrect_answer_token_ids,
         )
+
+        # Clean up tensors that will not be used later
+        del treatment_logits
+        clear_cache()
 
         # Get activations of the receiver nodes after patching the sender head using activations from the baseline run
         receiver_activations_to_patch = {}
@@ -74,12 +82,12 @@ def path_patching(model, data_batches, sender_head, receiver_nodes, metric_fn) -
                 # Patch the sender head activations with those from the baseline run
                 if l == sender_layer_idx:
                     model.transformer.h[l].attn.c_proj.input[..., sender_slice] = (
-                        baseline_head_outputs[l][..., sender_slice]
+                        baseline_sender_output[..., sender_slice]
                     )
                 # Freeze all remaining heads to their activations under treatment
                 else:
                     model.transformer.h[l].attn.c_proj.input[...] = (
-                        treatment_head_outputs[l]
+                        treatment_sender_outputs[l]
                     )
 
             # Save the activations of the receiver node to use in the next run
@@ -102,6 +110,10 @@ def path_patching(model, data_batches, sender_head, receiver_nodes, metric_fn) -
                 else:
                     raise NotImplementedError
 
+        # Clean up tensors that will not be used later
+        del treatment_sender_outputs, baseline_sender_output
+        clear_cache()
+
         # Patch receiver nodes with the activations we saved from the previous run, and complete the forward pass
         with model.trace(treatment_inputs) as receiver_patch_tracer:
             for receiver, activation in receiver_activations_to_patch.items():
@@ -123,12 +135,20 @@ def path_patching(model, data_batches, sender_head, receiver_nodes, metric_fn) -
             # Save the logits from the patched run
             patched_logits = model.lm_head.output.save()
 
+        # Clean up tensors that will not be used later
+        del receiver_activations_to_patch
+        clear_cache()
+
         # Obtain the value of the metric under the patched run
         patched_metric = metric_fn(
             patched_logits.cpu(),
             correct_answer_token_ids,
             incorrect_answer_token_ids,
         )
+
+        # Clean up tensors that will not be used later
+        del patched_logits
+        clear_cache()
 
         metric_diff = treatment_metric - patched_metric
 

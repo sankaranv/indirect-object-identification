@@ -2,11 +2,19 @@ from nnsight import LanguageModel
 import random
 import numpy as np
 import json
+import gc
+import torch
 
 
 def load_gpt2():
     model = LanguageModel("openai-community/gpt2", device_map="auto", dispatch=True)
+    model.config._attn_implementation = "eager"
     return model
+
+
+def clear_cache():
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 def get_important_token_positions(model, dataset):
@@ -16,7 +24,7 @@ def get_important_token_positions(model, dataset):
         "S2": [],
         "PLACE": [],
         "OBJECT": [],
-        "END": -1,
+        "END": [],
     }
 
     for i, datapoint in enumerate(dataset):
@@ -40,6 +48,7 @@ def get_important_token_positions(model, dataset):
         important_token_positions["S1"].append(s_token_positions[0])
         important_token_positions["S2"].append(s_token_positions[1])
         important_token_positions["IO"].append(io_token_positions[0])
+        important_token_positions["END"].append(-1)
 
     return important_token_positions
 
@@ -138,6 +147,14 @@ def get_batches(
         == fixed_len
     ]
 
+    # Tokenize the prompts
+    encoded_treatment_prompts = model.tokenizer(
+        treatment_prompts, return_tensors="pt", padding=True
+    )
+    encoded_baseline_prompts = model.tokenizer(
+        baseline_prompts, return_tensors="pt", padding=True
+    )
+
     for i in range(n_batches):
         start_idx = i * batch_size
         end_idx = start_idx + batch_size
@@ -146,13 +163,25 @@ def get_batches(
         treatment_prompts_text = [treatment_prompts[idx] for idx in batch_indices]
         baseline_prompts_text = [baseline_prompts[idx] for idx in batch_indices]
 
-        # Tokenize the prompts and save them as dicts
-        treatment_inputs = model.tokenizer(
-            treatment_prompts_text, return_tensors="pt", padding=True
-        )
-        baseline_inputs = model.tokenizer(
-            baseline_prompts_text, return_tensors="pt", padding=True
-        )
+        # Save the tokenized prompts for the batch
+        treatment_inputs = {
+            "input_ids": encoded_treatment_prompts["input_ids"][batch_indices],
+            "attention_mask": encoded_treatment_prompts["attention_mask"][
+                batch_indices
+            ],
+        }
+        baseline_inputs = {
+            "input_ids": encoded_baseline_prompts["input_ids"][batch_indices],
+            "attention_mask": encoded_baseline_prompts["attention_mask"][batch_indices],
+        }
+
+        important_token_positions_per_batch = {
+            key: torch.tensor(
+                [important_token_positions[key][idx] for idx in batch_indices]
+            )
+            for key in ["S1", "IO", "S2", "END"]
+        }
+
         # device = next(model.parameters()).device
         # treatment_inputs = {k: v.to(device) for k, v in treatment_inputs.items()}
         # baseline_inputs = {k: v.to(device) for k, v in baseline_inputs.items()}
@@ -171,6 +200,7 @@ def get_batches(
             "incorrect_answer_token_ids": [
                 answer_token_ids["incorrect"][idx] for idx in batch_indices
             ],
+            "important_token_positions": important_token_positions_per_batch,
         }
         data_batches.append(batch)
 
