@@ -68,16 +68,20 @@ def compute_attention_probs_on_input_tokens(
     data_batches: List[Dict],
     key_token: str,
     query_token: str,
-) -> Dict[Tuple[int, int], float]:
+    return_per_sample: bool = False,
+) -> Union[Dict[Tuple[int, int], float], Dict[Tuple[int, int], List[Tuple[float]]]]:
     """
     Compute average attention probability of each head at the query position on the specified target tokens.
     """
     n_layers = len(model.transformer.h)
     n_head = model.config.n_head
 
-    # Accumulate sums and counts to compute running mean
-    head_sums = {(l, h): 0.0 for l in range(n_layers) for h in range(n_head)}
-    head_counts = {(l, h): 0 for l in range(n_layers) for h in range(n_head)}
+    if return_per_sample:
+        head_samples = {(l, h): [] for l in range(n_layers) for h in range(n_head)}
+    else:
+        # Accumulate sums and counts to compute running mean
+        head_sums = {(l, h): 0.0 for l in range(n_layers) for h in range(n_head)}
+        head_counts = {(l, h): 0 for l in range(n_layers) for h in range(n_head)}
 
     # Compute the average attention probability of each head at the query position on the specified target tokens
     for batch in data_batches:
@@ -102,22 +106,26 @@ def compute_attention_probs_on_input_tokens(
                 query_pos = query_positions[i]
                 key_pos = key_positions[i]
                 for head in range(n_head):
-                    head_sums[(layer, head)] += layer_attn[
-                        i, head, query_pos, key_pos
-                    ].item()
-                    head_counts[(layer, head)] += 1
+                    attn_prob = layer_attn[i, head, query_pos, key_pos].item()
+                    if return_per_sample:
+                        head_samples[(layer, head)].append(attn_prob)
+                    else:
+                        head_sums[(layer, head)] += attn_prob
+                        head_counts[(layer, head)] += 1
 
         # Clean up tensors from the NNsight trace
         del attn_weights
         clear_cache()
 
-    head_attn_probs = {
-        (layer, head): head_sums[(layer, head)] / head_counts[(layer, head)]
-        for layer in range(n_layers)
-        for head in range(n_head)
-    }
-
-    return head_attn_probs
+    if return_per_sample:
+        return head_samples
+    else:
+        head_attn_probs = {
+            (layer, head): head_sums[(layer, head)] / head_counts[(layer, head)]
+            for layer in range(n_layers)
+            for head in range(n_head)
+        }
+        return head_attn_probs
 
 
 def compute_logit_lens_on_target_tokens(
@@ -125,7 +133,8 @@ def compute_logit_lens_on_target_tokens(
     data_batches: List[Dict],
     target_token: str,
     write_position: str = "END",
-) -> Dict[Tuple[int, int], float]:
+    return_per_sample: bool = False,
+) -> Union[Dict[Tuple[int, int], float], Dict[Tuple[int, int], List[Tuple[float]]]]:
     """
     Compute the average logit lens score for the target token at the write position.
     """
@@ -145,10 +154,13 @@ def compute_logit_lens_on_target_tokens(
     n_head = model.config.n_head
     d_head = model.config.hidden_size // n_head
 
-    logit_projection_sums = {
-        l: torch.zeros(n_head).to(model.device) for l in range(n_layers)
-    }
-    counts = {l: torch.zeros(n_head).to(model.device) for l in range(n_layers)}
+    if return_per_sample:
+        head_samples = {(l, h): [] for l in range(n_layers) for h in range(n_head)}
+    else:
+        logit_projection_sums = {
+            l: torch.zeros(n_head).to(model.device) for l in range(n_layers)
+        }
+        counts = {l: torch.zeros(n_head).to(model.device) for l in range(n_layers)}
 
     for batch in data_batches:
 
@@ -177,23 +189,34 @@ def compute_logit_lens_on_target_tokens(
                 "batch n_head d_head, n_head d_head -> batch n_head",
             )
 
-            # Aggregate the logit projections across batches
-            logit_projection_sums[layer] += logit_projection_vals.sum(dim=0)
-            counts[layer] += logit_projection_vals.shape[0]
+            if return_per_sample:
+                for head in range(n_head):
+                    head_samples[(layer, head)].extend(
+                        logit_projection_vals[:, head].detach().cpu().tolist()
+                    )
+            else:
+                # Aggregate the logit projections across batches
+                logit_projection_sums[layer] += logit_projection_vals.sum(dim=0)
+                counts[layer] += logit_projection_vals.shape[0]
 
         del layer_outputs
         clear_cache()
 
-    logit_projections = {}
-    for layer in range(n_layers):
-        logit_projection_sums[layer] /= counts[layer]
-        for head in range(n_head):
-            logit_projections[(layer, head)] = logit_projection_sums[layer][head].item()
+    if return_per_sample:
+        return head_samples
+    else:
+        logit_projections = {}
+        for layer in range(n_layers):
+            logit_projection_sums[layer] /= counts[layer]
+            for head in range(n_head):
+                logit_projections[(layer, head)] = logit_projection_sums[layer][
+                    head
+                ].item()
 
-    del logit_projection_sums, counts
-    clear_cache()
+        del logit_projection_sums, counts
+        clear_cache()
 
-    return logit_projections
+        return logit_projections
 
 
 def copy_score(
@@ -427,43 +450,63 @@ def find_name_movers(
     s2_correlation_coeffs = {}
     io_correlation_coeffs = {}
 
-    # Scatterplot for attention probability vs. logit lens scores for the IO token
+    # Scatterplot for attention probability vs. logit lens scores
+    io_attention_prob_samples = compute_attention_probs_on_input_tokens(
+        model, data_batches, "IO", "END", return_per_sample=True
+    )
+    s2_attention_prob_samples = compute_attention_probs_on_input_tokens(
+        model, data_batches, "S2", "END", return_per_sample=True
+    )
+    io_logit_projection_samples = compute_logit_lens_on_target_tokens(
+        model, data_batches, "IO", "END", return_per_sample=True
+    )
+    s2_logit_projection_samples = compute_logit_lens_on_target_tokens(
+        model, data_batches, "S2", "END", return_per_sample=True
+    )
+
     for layer, head in candidate_heads:
-        plt.scatter(
-            io_attention_probs[(layer, head)], io_logit_projections[(layer, head)]
-        )
-        io_correlation_coeffs[layer, head] = np.corrcoef(
-            io_attention_probs[(layer, head)], io_logit_projections[(layer, head)]
+        plt.figure(figsize=(6, 6), dpi=300)
+        s2_correlation_coeff = np.corrcoef(
+            s2_attention_prob_samples[(layer, head)],
+            s2_logit_projection_samples[(layer, head)],
         )[0, 1]
-        plt.xlabel("Attention Probability on IO token")
-        plt.ylabel("Logit Lens score for IO token")
-        plt.title(
-            f"Head ({layer}, {head}): attention probability vs. logit lens score for IO token (correlation: {io_correlation_coeffs[(layer, head)]:.2f})"
+        io_correlation_coeff = np.corrcoef(
+            io_attention_prob_samples[(layer, head)],
+            io_logit_projection_samples[(layer, head)],
+        )[0, 1]
+
+        plt.scatter(
+            s2_attention_prob_samples[(layer, head)],
+            s2_logit_projection_samples[(layer, head)],
+            color=mcolors.CSS4_COLORS["limegreen"],
+            label=f"S (rho = {s2_correlation_coeff:.2f})",
+            edgecolor="k",
+            s=30,
+            alpha=0.7,
+            linewidths=0.5,
         )
+        plt.scatter(
+            io_attention_prob_samples[(layer, head)],
+            io_logit_projection_samples[(layer, head)],
+            color=mcolors.CSS4_COLORS["mediumorchid"],
+            label=f"IO (rho = {io_correlation_coeff:.2f})",
+            edgecolor="k",
+            s=30,
+            alpha=0.7,
+            linewidths=0.5,
+        )
+        plt.legend()
+        plt.grid(True, linestyle="--", alpha=0.3)
+        plt.xlabel("Attention Probability")
+        plt.ylabel("Logit Lens score")
+        plt.title(f"Head ({layer}, {head}): attention probability vs. logit lens score")
         if not os.path.exists("plots/name_movers"):
             os.makedirs("plots/name_movers")
-        plt.savefig(
-            f"plots/name_movers/IO_attention_prob_vs_logit_lens_{layer}_{head}.png"
-        )
+        plt.savefig(f"plots/name_movers/attn_prob_vs_logit_lens_{layer}_{head}.png")
         plt.close()
 
-    # Scatterplot for attention probability vs. logit lens scores for the S token
-    for layer, head in candidate_heads:
-        plt.scatter(
-            s2_attention_probs[(layer, head)], s2_logit_projections[(layer, head)]
-        )
-        s2_correlation_coeffs[layer, head] = np.corrcoef(
-            s2_attention_probs[(layer, head)], s2_logit_projections[(layer, head)]
-        )[0, 1]
-        plt.xlabel("Attention Probability on S token")
-        plt.ylabel("Logit Lens score for S token")
-        plt.title(
-            f"Head ({layer}, {head}): attention probability vs. logit lens score for S token (correlation: {s2_correlation_coeffs[(layer, head)]:.2f})"
-        )
-        plt.savefig(
-            f"plots/name_movers/S_attention_prob_vs_logit_lens_{layer}_{head}.png"
-        )
-        plt.close()
+        s2_correlation_coeffs[(layer, head)] = s2_correlation_coeff
+        io_correlation_coeffs[(layer, head)] = io_correlation_coeff
 
     # Create results table with scores for the candidate heads
     results_table = pd.DataFrame(
