@@ -91,9 +91,25 @@ def ov_copy_strength(model, layer: int, head: int) -> float:
     W_O_h = W_O[head * d_head : (head + 1) * d_head, :]             # [d_head, d_model]
     W_U   = model.lm_head.weight.detach()                           # [vocab, d_model]
 
-    # OV circuit: [vocab, vocab]
-    OV = W_E @ W_V @ W_O_h @ W_U.T
+    # OV circuit would be [vocab, vocab] — too large to materialise on MPS.
+    # Compute diagonal and off-diagonal statistics without the full matrix.
+    #
+    # Let A = W_E @ W_V @ W_O_h  shape [V, d_model]
+    #     B = W_U                 shape [V, d_model]
+    # OV = A @ B.T               shape [V, V]
+    #
+    # Diagonal mean:   mean_i (A[i] · B[i])
+    # Total sum:       (sum_i A[i]) · (sum_j B[j])   (outer-product row/col sums)
+    # Off-diag mean:   (total_sum - diag_sum) / (V*(V-1))
+    V = W_E.size(0)
+    A = (W_E @ W_V @ W_O_h).cpu().float()   # [V, d_model]  force CPU+fp32 to avoid MPS limits
+    B = W_U.cpu().float()                    # [V, d_model]
 
-    diag     = OV.diagonal().mean().item()
-    off_diag = (OV.sum() - OV.diagonal().sum()) / (OV.numel() - OV.size(0))
-    return diag / (off_diag.abs().item() + 1e-8)
+    diag_per_tok = (A * B).sum(-1)           # [V]
+    diag_sum     = diag_per_tok.sum().item()
+    diag_mean    = diag_sum / V
+
+    total_sum    = (A.sum(0) @ B.sum(0)).item()
+    off_diag_mean = (total_sum - diag_sum) / (V * (V - 1))
+
+    return diag_mean / (abs(off_diag_mean) + 1e-8)
