@@ -1,174 +1,174 @@
+from __future__ import annotations
+
+import dataclasses
+from typing import Callable, Dict, List, Optional, Tuple
+
 import torch
-from typing import Dict
+
 from utils import clear_cache
 
 
-def logit_diff_metric(
-    logits: torch.Tensor, correct_ids: torch.Tensor, incorrect_ids: torch.Tensor
-):
-    """Default IOI metric: logit(correct) - logit(incorrect) at final position."""
-    final = logits[:, -1, :]
-    rows = torch.arange(final.size(0), device=final.device)
-    return final[rows, correct_ids] - final[rows, incorrect_ids]
+@dataclasses.dataclass
+class PatchingResult:
+    """Causal effect score for each (layer, head) pair."""
+    scores: Dict[Tuple[int, int], float]
+    n_layers: int
+    n_heads: int
+
+    def as_matrix(self) -> torch.Tensor:
+        mat = torch.zeros(self.n_layers, self.n_heads)
+        for (l, h), v in self.scores.items():
+            mat[l, h] = v
+        return mat
+
+    def top_k(self, k: int) -> List[Tuple[int, int]]:
+        return sorted(self.scores, key=lambda lh: self.scores[lh], reverse=True)[:k]
 
 
-def path_patching(model, data_batches, sender_head, receiver_nodes, metric_fn) -> Dict:
+def _batches(clean: torch.Tensor, corrupted: torch.Tensor, batch_size: Optional[int]):
+    N = clean.size(0)
+    if batch_size is None or batch_size >= N:
+        yield clean, corrupted
+        return
+    for start in range(0, N, batch_size):
+        yield clean[start:start + batch_size], corrupted[start:start + batch_size]
+
+
+def path_patch_head_to_logits(
+    model,
+    clean: torch.Tensor,
+    corrupted: torch.Tensor,
+    metric: Callable[[torch.Tensor], torch.Tensor],
+    *,
+    batch_size: Optional[int] = None,
+) -> PatchingResult:
+    """For each head, patch its z-output from corrupted into a clean run; measure metric change.
+
+    metric: Callable[[Tensor[N, seq, vocab]], Tensor[N]] — receives full logits [N, seq, vocab];
+    callers select the position they need (e.g. lambda logits: metric_fn(logits[:, -1, :])).
     """
-    Algorithm 1: Path Patching from the IOI paper.
-
-    Args:
-        model: The language model
-        data_batches: Dictionary containing treatment and baseline prompts
-        sender_head: Sender attention head (layer, head_idx)
-        receiver_nodes: List of receiver nodes to patch to
-        metric_fn: Function to compute the metric
-
-    Returns:
-        Dictionary with path patching results
-    """
-
-    results = {}
     n_layers = len(model.transformer.h)
-    n_head = model.config.n_head
-    d_model = model.config.n_embd
-    d_head = d_model // n_head
-    sender_layer_idx, sender_head_idx = sender_head
+    n_heads  = model.config.n_head
+    d_head   = model.config.n_embd // n_heads
 
-    # Attention heads are all concatenated together in GPT2
-    # To get the dimensions of a head output that correspond to one head, we need to slice out its chunk of size d_head
-    sender_slice = slice(sender_head_idx * d_head, (sender_head_idx + 1) * d_head)
+    batch_effects: Dict[Tuple[int, int], List[float]] = {
+        (l, h): [] for l in range(n_layers) for h in range(n_heads)
+    }
 
-    for i, batch in enumerate(data_batches):
+    for clean_b, corr_b in _batches(clean, corrupted, batch_size):
 
-        # Get data from the batch
-        treatment_inputs = batch["treatment_inputs"]
-        baseline_inputs = batch["baseline_inputs"]
-        correct_answer_token_ids = batch["correct_answer_token_ids"]
-        incorrect_answer_token_ids = batch["incorrect_answer_token_ids"]
-
-        # Get activations of the sender headon the baseline input
-        with model.trace(baseline_inputs) as baseline_run_tracer:
-            baseline_sender_output = model.transformer.h[
-                sender_layer_idx
-            ].attn.c_proj.input.save()
-
-        # Get activations for all layers on the treatment input and compute the metric under treatment
-        treatment_sender_outputs = {}
-        with model.trace(treatment_inputs) as treatment_run_tracer:
+        corr_z = {}
+        with model.trace({"input_ids": corr_b}):
             for l in range(n_layers):
-                if l != sender_layer_idx:
-                    treatment_sender_outputs[l] = model.transformer.h[
-                        l
-                    ].attn.c_proj.input.save()
-            treatment_logits = model.lm_head.output.save()
+                corr_z[l] = model.transformer.h[l].attn.c_proj.input.save()
 
-        treatment_metric = metric_fn(
-            treatment_logits.cpu(),
-            correct_answer_token_ids,
-            incorrect_answer_token_ids,
-        )
-
-        # Clean up tensors that will not be used later
-        del treatment_logits
-        clear_cache()
-
-        # Get activations of the receiver nodes after patching the sender head using activations from the baseline run
-        receiver_activations_to_patch = {}
-        with model.trace(treatment_inputs) as sender_patch_tracer:
-
-            # In NNsight we always apply interventions in forward pass order
+        clean_z = {}
+        with model.trace({"input_ids": clean_b}):
             for l in range(n_layers):
+                clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+            clean_logits = model.lm_head.output.save()
 
-                # Patch the sender head activations with those from the baseline run
-                if l == sender_layer_idx:
-                    model.transformer.h[l].attn.c_proj.input[..., sender_slice] = (
-                        baseline_sender_output[..., sender_slice]
-                    )
-                # Freeze all remaining heads to their activations under treatment
-                else:
-                    model.transformer.h[l].attn.c_proj.input[...] = (
-                        treatment_sender_outputs[l]
-                    )
+        clean_m = metric(clean_logits.cpu())
 
-            # Save the activations of the receiver node to use in the next run
-            # Receivers can either be "logits", a tuple (layer_idx, "mlp"), or a tuple (layer_idx, head_idx)
-            for receiver in receiver_nodes:
-                if receiver == "logits":
-                    receiver_activations_to_patch[receiver] = (
-                        model.transformer.ln_f.input.save()
-                    )
-                elif isinstance(receiver, tuple) and receiver[1] == "mlp":
-                    layer_idx = receiver[0]
-                    receiver_activations_to_patch[receiver] = model.transformer.h[
-                        layer_idx
-                    ].mlp.c_fc.input.save()
-                elif isinstance(receiver, tuple) and isinstance(receiver[1], int):
-                    layer_idx, head_idx = receiver
-                    receiver_activations_to_patch[receiver] = model.transformer.h[
-                        layer_idx
-                    ].attn.c_proj.input.save()
-                else:
-                    raise NotImplementedError
+        for sl, sh in [(l, h) for l in range(n_layers) for h in range(n_heads)]:
+            z_sl = slice(sh * d_head, (sh + 1) * d_head)
+            with model.trace({"input_ids": clean_b}):
+                for l in range(n_layers):
+                    if l == sl:
+                        model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
+                    else:
+                        model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
+                patched_logits = model.lm_head.output.save()
 
-        # Clean up tensors that will not be used later
-        del treatment_sender_outputs, baseline_sender_output
+            patched_m = metric(patched_logits.cpu())
+            batch_effects[(sl, sh)].append((clean_m - patched_m).mean().item())
+            del patched_logits
+            clear_cache()
+
+        del corr_z, clean_z, clean_logits
         clear_cache()
 
-        # Patch receiver nodes with the activations we saved from the previous run, and complete the forward pass
-        with model.trace(treatment_inputs) as receiver_patch_tracer:
-            for receiver, activation in receiver_activations_to_patch.items():
-                if receiver == "logits":
-                    model.transformer.ln_f.input[...] = activation
+    scores = {k: sum(v) / len(v) for k, v in batch_effects.items()}
+    return PatchingResult(scores=scores, n_layers=n_layers, n_heads=n_heads)
 
-                elif isinstance(receiver, tuple) and receiver[1] == "mlp":
-                    layer_idx = receiver[0]
-                    model.transformer.h[layer_idx].mlp.c_fc.input[...] = activation
 
-                elif isinstance(receiver, tuple) and isinstance(receiver[1], int):
-                    layer_idx, head_idx = receiver
-                    target = model.transformer.h[layer_idx].attn.c_proj.input
-                    head_slice = slice(head_idx * d_head, (head_idx + 1) * d_head)
-                    target[..., head_slice] = activation[..., head_slice]
-                else:
-                    raise NotImplementedError
+def path_patch_head_to_heads(
+    model,
+    clean: torch.Tensor,
+    corrupted: torch.Tensor,
+    receiver_heads: List[Tuple[int, int]],
+    receiver_input: str,
+    metric: Callable[[torch.Tensor], torch.Tensor],
+    *,
+    batch_size: Optional[int] = None,
+) -> PatchingResult:
+    """For each candidate sender, patch to receiver_heads' Q/K/V inputs; measure metric change.
 
-            # Save the logits from the patched run
-            patched_logits = model.lm_head.output.save()
+    Used for S2-inhibition (receiver_input="v" into NM heads) and
+    induction analysis (receiver_input="k").
 
-        # Clean up tensors that will not be used later
-        del receiver_activations_to_patch
+    metric: Callable[[Tensor[N, seq, vocab]], Tensor[N]] — receives full logits [N, seq, vocab];
+    callers select the position they need (e.g. lambda logits: metric_fn(logits[:, -1, :])).
+    """
+    assert receiver_input in ("q", "k", "v")
+
+    n_layers = len(model.transformer.h)
+    n_heads  = model.config.n_head
+    d_model  = model.config.n_embd
+    d_head   = d_model // n_heads
+    qkv_off  = {"q": 0, "k": d_model, "v": 2 * d_model}[receiver_input]
+    recv_layers = sorted({l for l, _ in receiver_heads})
+
+    batch_effects: Dict[Tuple[int, int], List[float]] = {
+        (l, h): [] for l in range(n_layers) for h in range(n_heads)
+    }
+
+    for clean_b, corr_b in _batches(clean, corrupted, batch_size):
+
+        corr_z = {}
+        with model.trace({"input_ids": corr_b}):
+            for l in range(n_layers):
+                corr_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+
+        clean_z, clean_recv_qkv = {}, {}
+        with model.trace({"input_ids": clean_b}):
+            for l in range(n_layers):
+                clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+            for l in recv_layers:
+                clean_recv_qkv[l] = model.transformer.h[l].attn.c_attn.output.save()
+            clean_logits = model.lm_head.output.save()
+
+        clean_m = metric(clean_logits.cpu())
+
+        for sl, sh in [(l, h) for l in range(n_layers) for h in range(n_heads)]:
+            z_sl = slice(sh * d_head, (sh + 1) * d_head)
+
+            patched_recv = {}
+            with model.trace({"input_ids": clean_b}):
+                for l in range(n_layers):
+                    if l == sl:
+                        model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
+                    else:
+                        model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
+                for l in recv_layers:
+                    patched_recv[l] = model.transformer.h[l].attn.c_attn.output.save()
+
+            with model.trace({"input_ids": clean_b}):
+                for rl, rh in receiver_heads:
+                    hs = qkv_off + rh * d_head
+                    he = qkv_off + (rh + 1) * d_head
+                    model.transformer.h[rl].attn.c_attn.output[..., hs:he] = (
+                        patched_recv[rl][..., hs:he]
+                    )
+                patched_logits = model.lm_head.output.save()
+
+            patched_m = metric(patched_logits.cpu())
+            batch_effects[(sl, sh)].append((clean_m - patched_m).mean().item())
+            del patched_recv, patched_logits
+            clear_cache()
+
+        del corr_z, clean_z, clean_recv_qkv, clean_logits
         clear_cache()
 
-        # Obtain the value of the metric under the patched run
-        patched_metric = metric_fn(
-            patched_logits.cpu(),
-            correct_answer_token_ids,
-            incorrect_answer_token_ids,
-        )
-
-        # Clean up tensors that will not be used later
-        del patched_logits
-        clear_cache()
-
-        metric_diff = (treatment_metric - patched_metric) / treatment_metric
-
-        # Report the metric values per prompt along with mean and standard deviation for the batch
-        results[i] = {
-            "treatment_metric_values": treatment_metric.cpu().tolist(),
-            "treatment_metric_mean": treatment_metric.mean().item(),
-            "treatment_metric_std": (
-                treatment_metric.std().item() if treatment_metric.numel() > 1 else None
-            ),
-            "patched_metric_values": patched_metric.cpu().tolist(),
-            "patched_metric_mean": patched_metric.mean().item(),
-            "patched_metric_std": (
-                patched_metric.std().item() if patched_metric.numel() > 1 else None
-            ),
-            "metric_diff_values": metric_diff.cpu().tolist(),
-            "metric_diff_mean": metric_diff.mean().item(),
-            "metric_diff_std": (
-                metric_diff.std().item() if metric_diff.numel() > 1 else None
-            ),
-        }
-
-    return results
+    scores = {k: sum(v) / len(v) for k, v in batch_effects.items()}
+    return PatchingResult(scores=scores, n_layers=n_layers, n_heads=n_heads)

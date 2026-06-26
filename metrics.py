@@ -1,26 +1,21 @@
+from __future__ import annotations
+from typing import List, Union
 import torch
-import numpy as np
 
 
-def logit_diff(model, dataset):
+def logit_diff(
+    logits: torch.Tensor,
+    correct_ids: Union[List[int], torch.Tensor],
+    incorrect_ids: Union[List[int], torch.Tensor],
+) -> torch.Tensor:
+    """logit(correct) − logit(incorrect) per example.
 
-    logit_diffs = []
-    for batch in dataset:
-        prompts = batch["clean_prompts"]
-        correct_answers = batch["correct_answers"]
-        incorrect_answers = batch["incorrect_answers"]
-        correct_answer_token_ids = torch.tensor(batch["correct_answer_token_ids"])
-        incorrect_answer_token_ids = torch.tensor(batch["incorrect_answer_token_ids"])
-        batch_logit_diffs = []
-
-        with model.trace() as tracer:
-            with tracer.invoke(prompts) as invoker:
-                logits = model.lm_head.output
-                # Get logits for the next token position (after the prompt)
-                next_token_logits = logits[0, -1, :]  # Shape: [vocab_size]
-                correct_logits = next_token_logits[correct_answer_token_ids]
-                incorrect_logits = next_token_logits[incorrect_answer_token_ids]
-                logit_diff = correct_logits - incorrect_logits
-                batch_logit_diffs.append(logit_diff.mean().item())
-        logit_diffs.append(batch_logit_diffs)
-    return logit_diffs
+    logits: [N, vocab] — caller selects the sequence position before calling.
+    """
+    assert logits.ndim == 2, f"expected [N, vocab], got shape {logits.shape}"
+    rows = torch.arange(logits.size(0), device=logits.device)
+    if not isinstance(correct_ids, torch.Tensor):
+        correct_ids = torch.tensor(correct_ids, device=logits.device)
+    if not isinstance(incorrect_ids, torch.Tensor):
+        incorrect_ids = torch.tensor(incorrect_ids, device=logits.device)
+    return logits[rows, correct_ids.to(logits.device)] - logits[rows, incorrect_ids.to(logits.device)]

@@ -1,25 +1,35 @@
-from utils import *
-import json
-from metrics import (
-    logit_diff,
-)  # TODO - there are two different logit_diff functions right now
-from patching import path_patching, logit_diff_metric
-import torch
-from experiments.name_movers import (
-    compute_head_to_logit_effects,
-    compute_attention_probs_on_input_tokens,
-    compute_logit_lens_on_target_tokens,
-    copy_score,
-    find_name_movers,
-)
+import os, sys, torch
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ioi"))
 
 torch.set_grad_enabled(False)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model = load_gpt2()
 
-# Load single example dataset
-ioi_dataset = json.load(open("./data/eng_ioi.json"))
-data_batches = get_batches(model, ioi_dataset, n_samples=300, batch_size=300, seed=42)
+from utils import load_model
+from metrics import logit_diff
+from ioi_dataset import IOIDataset
 
-# Find name mover heads
-find_name_movers(model, data_batches, causal_effect_threshold=0.01)
+model   = load_model()
+ioi     = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+abc     = ioi.gen_flipped_prompts(("IO", "RAND"))
+end_pos = ioi.word_idx["end"]
+N       = len(ioi)
+
+with model.trace({"input_ids": ioi.toks.long()}):
+    clean_logits = model.lm_head.output.save()
+with model.trace({"input_ids": abc.toks.long()}):
+    corr_logits = model.lm_head.output.save()
+
+clean_ld = logit_diff(
+    clean_logits.cpu()[torch.arange(N), end_pos],
+    ioi.io_tokenIDs, ioi.s_tokenIDs,
+).mean().item()
+corr_ld = logit_diff(
+    corr_logits.cpu()[torch.arange(N), end_pos],
+    ioi.io_tokenIDs, ioi.s_tokenIDs,
+).mean().item()
+
+print(f"[Phase 1] Clean logit diff:     {clean_ld:.4f}  (paper: ~3.55)")
+print(f"[Phase 1] Corrupted logit diff: {corr_ld:.4f}  (paper: ~-0.38)")
+assert clean_ld > 1.0, f"clean LD too low: {clean_ld}"
+assert corr_ld < clean_ld
+print("[Phase 1] PASS")
