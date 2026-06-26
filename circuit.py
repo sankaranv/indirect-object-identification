@@ -51,7 +51,7 @@ SEQ_POS_TO_KEEP: Dict[str, str] = {
     "s2_inhibition":       "end",
     "induction":           "S2",
     "duplicate_token":     "S2",
-    "previous_token":      "S1+1",
+    "previous_token":      "S+1",
 }
 
 
@@ -74,7 +74,7 @@ def compute_means(
     for layer in range(n_layers):
         with model.trace({"input_ids": corrupted_toks}):
             z = model.transformer.h[layer].attn.c_proj.input.save()
-        z_heads = z.view(N, seq, n_heads, d_head)
+        z_heads = z.reshape(N, seq, n_heads, d_head)
         for group in groups:
             group_mean = z_heads[group].mean(0)
             means[layer, group] = group_mean
