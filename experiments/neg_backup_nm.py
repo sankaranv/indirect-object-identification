@@ -17,6 +17,8 @@ from ioi_dataset import IOIDataset
 
 NM_HEADS     = [(9, 9), (10, 0), (9, 6)]
 EXPECTED_NNM = {(10, 7), (11, 10)}
+# (9,0) and (9,7) are at layer 9 alongside primary NMs (9,6),(9,9); ablating NMs does not
+# change the residual entering layer 9, so same-layer heads always show contrib_diff=0.
 EXPECTED_BNM = {(10, 10), (10, 6), (10, 2), (10, 1), (11, 2), (9, 7), (9, 0), (11, 9)}
 NM_CSV       = "results/name_movers/head_to_logits_causal_effect.csv"
 
