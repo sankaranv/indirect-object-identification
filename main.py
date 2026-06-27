@@ -1,24 +1,36 @@
-from utils import *
-import json
-from metrics import (
-    logit_diff,
-)  # TODO - there are two different logit_diff functions right now
-from patching import path_patching, logit_diff_metric
-import torch
+import os, sys, torch
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model = load_gpt2()
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ioi"))
 
-# Load single example dataset
-ioi_dataset = json.load(open("./data/eng_ioi.json"))
-data_batches = get_batches(model, ioi_dataset, n_samples=300, batch_size=50, seed=42)
-# logit_diff = logit_diff(model, data_batches)
-# print(logit_diff)
-# print(data_batches[0])
+torch.set_grad_enabled(False)
 
-sender_head = (5, 3)
-receiver_nodes = ["logits"]
-results = path_patching(
-    model, data_batches, sender_head, receiver_nodes, logit_diff_metric
-)
-print(json.dumps(results, indent=4))
+from utils import load_model
+from metrics import logit_diff
+from ioi_dataset import IOIDataset
+
+model   = load_model()
+ioi     = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+abc     = ioi.gen_flipped_prompts(("IO", "RAND"))
+abc     = abc.gen_flipped_prompts(("S", "RAND"))
+end_pos = ioi.word_idx["end"]
+N       = len(ioi)
+
+with model.trace({"input_ids": ioi.toks.long()}):
+    clean_logits = model.lm_head.output.save()
+with model.trace({"input_ids": abc.toks.long()}):
+    corr_logits = model.lm_head.output.save()
+
+clean_ld = logit_diff(
+    clean_logits.cpu()[torch.arange(N), end_pos],
+    ioi.io_tokenIDs, ioi.s_tokenIDs,
+).mean().item()
+corr_ld = logit_diff(
+    corr_logits.cpu()[torch.arange(N), end_pos],
+    ioi.io_tokenIDs, ioi.s_tokenIDs,
+).mean().item()
+
+print(f"[Phase 1] Clean logit diff:     {clean_ld:.4f}  (paper: ~3.55)")
+print(f"[Phase 1] Corrupted logit diff: {corr_ld:.4f}  (paper: ~-0.38)")
+assert clean_ld > 1.0, f"clean LD too low: {clean_ld}"
+assert corr_ld < clean_ld
+print("[Phase 1] PASS")

@@ -1,0 +1,105 @@
+"""Figure 3: Name Mover heads identified via head→logit path patching,
+attention patterns, unembed projections, and OV copy strength.
+Expected: (9,9), (10,0), (9,6)
+"""
+import os
+import sys
+import json
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+torch.set_grad_enabled(False)
+
+from utils import load_model
+from metrics import logit_diff
+from patching import path_patch_head_to_logits
+from analysis import attention_to_positions, ov_copy_strength
+from ioi_dataset import IOIDataset
+
+EXPECTED  = {(9, 9), (10, 0), (9, 6)}
+THRESHOLD = 0.01
+
+
+def run():
+    model = load_model()
+    ioi   = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+    # ABC baseline: replace IO with random, then S with random
+    abc   = ioi.gen_flipped_prompts(("IO", "RAND"))
+    abc   = abc.gen_flipped_prompts(("S", "RAND"))
+    N       = len(ioi)
+    end_pos = ioi.word_idx["end"].long()   # [N]
+    io_pos  = ioi.word_idx["IO"].long()    # [N]
+
+    metric = lambda logits: logit_diff(
+        logits[torch.arange(N), end_pos],
+        ioi.io_tokenIDs,
+        ioi.s_tokenIDs,
+    )
+
+    # Head→logit causal effects via path patching
+    result = path_patch_head_to_logits(
+        model,
+        ioi.toks.long(),
+        abc.toks.long(),
+        metric,
+    )
+    effects = result.scores
+
+    candidate_heads = [(l, h) for (l, h), e in effects.items() if e > THRESHOLD]
+
+    # Attention probabilities: candidate NM heads attending to IO at END
+    attn = attention_to_positions(model, ioi.toks.long(), end_pos, io_pos)
+
+    # OV copy strength for candidates
+    copy = {(l, h): ov_copy_strength(model, l, h) for l, h in candidate_heads}
+
+    # --- plots ---
+    n_layers = len(model.transformer.h)
+    n_heads  = model.config.n_head
+
+    effect_arr = np.zeros((n_layers, n_heads))
+    for (l, h), e in effects.items():
+        effect_arr[l, h] = e
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    vmax = np.abs(effect_arr).max()
+    im = axes[0].imshow(effect_arr, cmap="RdBu", vmin=-vmax, vmax=vmax)
+    axes[0].set_xlabel("Head")
+    axes[0].set_ylabel("Layer")
+    axes[0].set_title("Head→logit causal effect (Figure 3a)")
+    plt.colorbar(im, ax=axes[0])
+
+    if copy:
+        lh_labels = [f"{l}.{h}" for l, h in sorted(copy)]
+        axes[1].bar(lh_labels, [copy[k] for k in sorted(copy)])
+        axes[1].set_ylabel("OV copy strength")
+        axes[1].set_title("OV copy strength for candidate NM heads (Figure 3c)")
+        axes[1].set_xticklabels(lh_labels, rotation=45, ha="right")
+
+    plt.tight_layout()
+    os.makedirs("plots/name_movers", exist_ok=True)
+    plt.savefig("plots/name_movers/fig3.png", dpi=150)
+    plt.close()
+
+    # Gate
+    found   = set(candidate_heads)
+    missing = EXPECTED - found
+    extra   = found - EXPECTED
+    print(f"Found:    {sorted(found)}")
+    print(f"Expected: {sorted(EXPECTED)}")
+    if extra:
+        print(f"WARNING: extra heads (not in EXPECTED): {sorted(extra)}")
+    print("WARNING: missing " + str(missing) if missing else "PASS")
+
+    os.makedirs("results/name_movers", exist_ok=True)
+    with open("results/name_movers/identified_heads.json", "w") as f:
+        json.dump(sorted([list(h) for h in found]), f)
+
+    return found
+
+
+if __name__ == "__main__":
+    run()
