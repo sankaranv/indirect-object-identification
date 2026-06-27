@@ -125,7 +125,7 @@ def _per_head_logit_diff_contribution(
     out = torch.zeros(n_layers, n_heads)
     for layer in range(n_layers):
         z = z_list[layer]
-        W_O   = model.transformer.h[layer].attn.c_proj.weight.detach()  # [d_model, d_model]
+        W_O   = model.transformer.h[layer].attn.c_proj.weight.detach()  # [n_heads*d_head, d_model]
         W_O_h = W_O.view(n_heads, d_head, model.config.n_embd)
         z_end = z[torch.arange(N), end_pos].view(N, n_heads, d_head)
         head_out = einops.einsum(z_end, W_O_h, "n nh dh, nh dh dm -> n nh dm")

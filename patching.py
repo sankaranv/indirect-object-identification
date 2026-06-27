@@ -22,7 +22,7 @@ class PatchingResult:
         return mat
 
     def top_k(self, k: int) -> List[Tuple[int, int]]:
-        return sorted(self.scores, key=lambda lh: self.scores[lh], reverse=True)[:k]
+        return sorted(self.scores, key=lambda lh: abs(self.scores[lh]), reverse=True)[:k]
 
 
 def _batches(clean: torch.Tensor, corrupted: torch.Tensor, batch_size: Optional[int]):

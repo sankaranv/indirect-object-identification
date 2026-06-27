@@ -16,6 +16,7 @@ Run from indirect-object-identification/:
 
 import copy
 import os
+import re
 import random
 import sys
 
@@ -57,13 +58,12 @@ def _gen_name_swap_dataset(ioi: IOIDataset) -> IOIDataset:
     for p in ioi.ioi_prompts:
         p2 = copy.deepcopy(p)
         io, s = p["IO"], p["S"]
-        # Use a sentinel to avoid double-replacement
-        text = (
-            p["text"]
-            .replace(io, "\x00IOMARK\x00")
-            .replace(s, io)
-            .replace("\x00IOMARK\x00", s)
-        )
+        # Use word-boundary regex + sentinel to handle names that are
+        # substrings of each other (e.g. "Ann" vs "Anna").
+        sentinel = "\x00IOMARK\x00"
+        text = re.sub(r'\b' + re.escape(io) + r'\b', sentinel, p["text"])
+        text = re.sub(r'\b' + re.escape(s) + r'\b', io, text)
+        text = text.replace(sentinel, s)
         p2["text"] = text
         p2["IO"] = s
         p2["S"] = io

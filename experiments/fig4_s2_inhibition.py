@@ -20,7 +20,8 @@ from ioi_dataset import IOIDataset
 
 NM_HEADS  = [(9, 9), (10, 0), (9, 6)]
 EXPECTED  = {(7, 3), (7, 9), (8, 6), (8, 10)}
-THRESHOLD = 0.05
+# Sign convention is patched−clean: helpful senders score negative.
+THRESHOLD = -0.05
 
 
 def run():
@@ -64,7 +65,7 @@ def run():
     plt.savefig("plots/s2_inhibition/fig4.png", dpi=150)
     plt.close()
 
-    found = {(l, h) for (l, h), e in scores.items() if e > THRESHOLD}
+    found = {(l, h) for (l, h), e in scores.items() if e < THRESHOLD}
     print(f"Found: {sorted(found)}\nExpected: {sorted(EXPECTED)}")
     missing = EXPECTED - found
     print("WARNING: missing " + str(missing) if missing else "PASS")

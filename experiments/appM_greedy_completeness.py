@@ -54,6 +54,29 @@ def _F(model, ioi, means, circuit, word_idx):
     return _ld(logits, N, end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs)
 
 
+def _F_model_ablate_K(model, ioi, means, K):
+    """Full model logit diff with only K heads mean-ablated (no circuit restriction)."""
+    n_layers = len(model.transformer.h)
+    n_heads = model.config.n_head
+    d_head = model.config.n_embd // n_heads
+    N, seq = ioi.toks.shape
+    # Build per-layer keep masks (True = keep clean, False = replace with mean)
+    keep = {l: torch.ones(N, seq, n_heads, dtype=torch.bool) for l in range(n_layers)}
+    for (l, h) in K:
+        keep[l][:, :, h] = False
+    layers_to_patch = [l for l in range(n_layers) if not keep[l].all()]
+    end_pos = ioi.word_idx["end"]
+    with model.trace({"input_ids": ioi.toks.long()}):
+        for l in layers_to_patch:
+            z = model.transformer.h[l].attn.c_proj.input
+            z_h = z.reshape(N, seq, n_heads, d_head)
+            mask = keep[l].unsqueeze(-1).to(z.device)
+            z_new = torch.where(mask, z_h, means[l].to(z.device))
+            model.transformer.h[l].attn.c_proj.input[:] = z_new.reshape(N, seq, n_heads * d_head)
+        logits = model.lm_head.output.save()
+    return _ld(logits, N, end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs)
+
+
 def greedy_k_sample(model, ioi, means, base_circuit, k=10, n_steps=5, seed=0):
     """Algorithm 3: greedy K sampling.
 
@@ -109,9 +132,8 @@ def run():
         K = greedy_k_sample(model, ioi, means, CIRCUIT, k=10, n_steps=5, seed=seed)
         # F(C\K): circuit minus K
         f_ck = _F(model, ioi, means, _ablate_circuit(CIRCUIT, K), ioi.word_idx)
-        # F(M\K): for the complete circuit, non-circuit heads ≈ 0 contribution,
-        # so F(M\K) ≈ F(C\K).  We use the same computation here.
-        f_mk = f_ck
+        # F(M\K): full model with only K ablated (no circuit restriction)
+        f_mk = _F_model_ablate_K(model, ioi, means, K)
         incompleteness = abs(f_ck - f_mk)
         greedy_runs.append((K, f_ck, f_mk, incompleteness))
         print(f"  seed={seed}: |K|={len(K)}, F(C\\K)={f_ck:.3f}, incompleteness={incompleteness:.4f}")
@@ -148,8 +170,7 @@ def run():
         for _ in range(3):
             K = set(rng.sample(all_heads, size))
             fck = _F(model, ioi, means, _ablate_circuit(CIRCUIT, K), ioi.word_idx)
-            # F(M\K) ≈ F(C\K) for the complete circuit
-            fmk = fck
+            fmk = _F_model_ablate_K(model, ioi, means, K)
             scatter_circuit.append((fck, fmk))
 
     # Add greedy K sets to scatter

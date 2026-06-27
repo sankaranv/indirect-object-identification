@@ -97,7 +97,7 @@ def run() -> None:
 
     for scores, fname, title in [
         (dup,  "fig18_dup.png",  "Duplicate token score (attention to first occurrence)"),
-        (prev, "fig18_prev.png", "Previous token score (mean off-diagonal attention)"),
+        (prev, "fig18_prev.png", "Previous token score (mean attention from pos i to i-1)"),
         (ind,  "fig18_ind.png",  "Induction score (attention to token after first occurrence)"),
     ]:
         arr = np.zeros((n_layers, n_heads))
