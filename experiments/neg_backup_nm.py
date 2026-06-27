@@ -134,14 +134,15 @@ def _per_head_logit_diff_contribution(
     return out
 
 
-def run(nnm_threshold=-0.2, bnm_threshold=0.1):
+def run(nnm_threshold=0.2, bnm_threshold=0.1):
     model = load_model()
     random.seed(1)
     np.random.seed(1)
     ioi   = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
 
     df  = pd.read_csv(NM_CSV)
-    nnm = {(int(r['layer']), int(r['head'])) for _, r in df.iterrows() if r['causal_effect'] < nnm_threshold}
+    # Sign convention (Wang et al. 2022): patched − clean is positive for NNMs (corrupting them helps).
+    nnm = {(int(r['layer']), int(r['head'])) for _, r in df.iterrows() if r['causal_effect'] > nnm_threshold}
     print(f"NNM: {sorted(nnm)}  expected {sorted(EXPECTED_NNM)}")
     print("PASS" if EXPECTED_NNM <= nnm else f"WARNING missing {EXPECTED_NNM - nnm}")
 

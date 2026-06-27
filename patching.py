@@ -80,7 +80,9 @@ def path_patch_head_to_logits(
                 patched_logits = model.lm_head.output.save()
 
             patched_m = metric(patched_logits.cpu())
-            batch_effects[(sl, sh)].append((clean_m - patched_m).mean().item())
+            # Sign matches paper (Wang et al. 2022): patched − clean is negative for helpful heads
+            # (corrupting them hurts), positive for NNMs. Reversed from "contribution" framing.
+            batch_effects[(sl, sh)].append((patched_m - clean_m).mean().item())
             del patched_logits
             clear_cache()
 
@@ -246,7 +248,8 @@ def path_patch_head_to_heads(
                 patched_logits = model.lm_head.output.save()
 
             patched_m = metric(patched_logits.cpu())
-            batch_effects[(sl, sh)].append((clean_m - patched_m).mean().item())
+            # Sign matches paper (Wang et al. 2022): patched − clean is negative for helpful heads.
+            batch_effects[(sl, sh)].append((patched_m - clean_m).mean().item())
             del patched_logits, recv_ln1, recv_z_step4
             clear_cache()
 
