@@ -170,13 +170,17 @@ def path_patch_head_to_heads(
                     clean_aux[l] = model.transformer.h[l].attn.output[1].save()
                 clean_logits = model.lm_head.output.save()
         else:
+            # nnsight 0.7: saving ln_1.output in the same trace as c_proj.input for all
+            # layers triggers MissedProviderError when any post-receiver layer c_proj.input
+            # is also saved (out-of-order proxy registration).  Split into two traces.
             with model.trace({"input_ids": clean_b}):
                 for l in range(n_layers):
                     clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
-                for l in recv_set:
+                clean_logits = model.lm_head.output.save()
+            with model.trace({"input_ids": clean_b}):
+                for l in sorted(recv_set):
                     # shape [N, seq, d_model] — input to c_attn after layer norm
                     clean_aux[l] = model.transformer.h[l].ln_1.output.save()
-                clean_logits = model.lm_head.output.save()
 
         clean_m = metric(clean_logits.cpu())
 
@@ -185,15 +189,22 @@ def path_patch_head_to_heads(
 
             # Step 3: Patch sender, freeze non-receiver/non-sender; save receiver ln_1.
             # Receiver layers get NO c_proj.input write → c_attn runs naturally → ln_1 is valid.
+            #
+            # nnsight 0.7 constraint: writing c_proj.input for any layer AFTER the earliest
+            # receiver prevents ln_1.output.save() from being provided for receiver layers.
+            # Fix: only freeze layers STRICTLY BEFORE recv_min; post-receiver non-recv layers
+            # are left to run freely (they do not affect receiver ln_1 inputs).
+            # Saves must be registered in ascending layer order (nnsight proxy ordering).
+            recv_min_l = min(recv_set)
             recv_ln1: Dict[int, torch.Tensor] = {}
             with model.trace({"input_ids": clean_b}):
-                for l in range(n_layers):
+                for l in range(recv_min_l):
                     if l == sl:
                         model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
                     elif l not in recv_set:
                         model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
                     # Receiver layers: no write → c_attn runs naturally from modified residual.
-                for l in recv_set:
+                for l in sorted(recv_set):  # ascending order — nnsight requires in-order saves
                     if l != sl:  # guard: sender == receiver layer → c_attn skipped by slice-write
                         recv_ln1[l] = model.transformer.h[l].ln_1.output.save()
 
