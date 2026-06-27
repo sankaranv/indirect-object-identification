@@ -132,7 +132,7 @@ def _per_head_logit_diff_contribution(
     return out
 
 
-def run(nnm_threshold=-0.05, bnm_threshold=0.1):
+def run(nnm_threshold=-0.2, bnm_threshold=0.1):
     model = load_model()
     random.seed(1)
     np.random.seed(1)
