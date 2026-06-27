@@ -90,7 +90,7 @@ def run():
     ax.axvline(0, color="gray", linewidth=0.7, linestyle="--")
     ax.set_xlabel("Attention prob. to IO at END position")
     ax.set_ylabel("Head output · (W_U[IO] − W_U[S])")
-    ax.set_title("Name Mover Heads: attention vs IO-direction projection (Fig. 3c)")
+    ax.set_title("Name Mover Heads: attention vs IO-direction projection")
     ax.legend()
     plt.tight_layout()
 
