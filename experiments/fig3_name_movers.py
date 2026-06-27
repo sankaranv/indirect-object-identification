@@ -2,6 +2,7 @@
 attention patterns, unembed projections, and OV copy strength.
 Expected: (9,9), (10,0), (9,6)
 """
+import csv
 import os
 import sys
 import json
@@ -20,7 +21,8 @@ from analysis import attention_to_positions, ov_copy_strength
 from ioi_dataset import IOIDataset
 
 EXPECTED  = {(9, 9), (10, 0), (9, 6)}
-THRESHOLD = 0.01
+# With paper sign convention (patched − clean), helpful heads have NEGATIVE causal effects.
+THRESHOLD = -0.01
 
 
 def run():
@@ -48,7 +50,16 @@ def run():
     )
     effects = result.scores
 
-    candidate_heads = [(l, h) for (l, h), e in effects.items() if e > THRESHOLD]
+    # Save full causal-effect matrix for downstream scripts (neg_backup_nm, fig3b, etc.)
+    os.makedirs("results/name_movers", exist_ok=True)
+    with open("results/name_movers/head_to_logits_causal_effect.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["layer", "head", "causal_effect"])
+        w.writeheader()
+        for (l, h), v in sorted(effects.items()):
+            w.writerow({"layer": l, "head": h, "causal_effect": v})
+
+    # NMs have negative causal effects (patched − clean): corrupting them hurts logit diff.
+    candidate_heads = [(l, h) for (l, h), e in effects.items() if e < THRESHOLD]
 
     # Attention probabilities: candidate NM heads attending to IO at END
     attn = attention_to_positions(model, ioi.toks.long(), end_pos, io_pos)
