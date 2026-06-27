@@ -130,12 +130,10 @@ def path_patch_head_to_heads(
             for l in range(n_layers):
                 corr_z[l] = model.transformer.h[l].attn.c_proj.input.save()
 
-        clean_z, clean_recv_qkv = {}, {}
+        clean_z = {}
         with model.trace({"input_ids": clean_b}):
             for l in range(n_layers):
                 clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
-            for l in recv_layers:
-                clean_recv_qkv[l] = model.transformer.h[l].attn.c_attn.output.save()
             clean_logits = model.lm_head.output.save()
 
         clean_m = metric(clean_logits.cpu())
@@ -143,31 +141,17 @@ def path_patch_head_to_heads(
         for sl, sh in [(l, h) for l in range(n_layers) for h in range(n_heads)]:
             z_sl = slice(sh * d_head, (sh + 1) * d_head)
 
-            patched_recv = {}
+            # Patch sender head's output from corrupted run and measure effect
             with model.trace({"input_ids": clean_b}):
-                for l in range(n_layers):
-                    if l == sl:
-                        model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
-                    else:
-                        model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
-                for l in recv_layers:
-                    patched_recv[l] = model.transformer.h[l].attn.c_attn.output.save()
-
-            with model.trace({"input_ids": clean_b}):
-                for rl, rh in receiver_heads:
-                    hs = qkv_off + rh * d_head
-                    he = qkv_off + (rh + 1) * d_head
-                    model.transformer.h[rl].attn.c_attn.output[..., hs:he] = (
-                        patched_recv[rl][..., hs:he]
-                    )
+                model.transformer.h[sl].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
                 patched_logits = model.lm_head.output.save()
 
             patched_m = metric(patched_logits.cpu())
             batch_effects[(sl, sh)].append((clean_m - patched_m).mean().item())
-            del patched_recv, patched_logits
+            del patched_logits
             clear_cache()
 
-        del corr_z, clean_z, clean_recv_qkv, clean_logits
+        del corr_z, clean_z, clean_logits
         clear_cache()
 
     scores = {k: sum(v) / len(v) for k, v in batch_effects.items()}
