@@ -49,6 +49,7 @@ def run():
         receiver_heads=IH_HEADS,
         receiver_input="k",
         metric=metric,
+        sender_positions=ioi.word_idx["S+1"].long(),
     )
 
     ih_min = min(l for l, _ in IH_HEADS)

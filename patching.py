@@ -28,10 +28,11 @@ class PatchingResult:
 def _batches(clean: torch.Tensor, corrupted: torch.Tensor, batch_size: Optional[int]):
     N = clean.size(0)
     if batch_size is None or batch_size >= N:
-        yield clean, corrupted
+        yield 0, N, clean, corrupted
         return
     for start in range(0, N, batch_size):
-        yield clean[start:start + batch_size], corrupted[start:start + batch_size]
+        end = min(start + batch_size, N)
+        yield start, end, clean[start:end], corrupted[start:end]
 
 
 def path_patch_head_to_logits(
@@ -54,7 +55,7 @@ def path_patch_head_to_logits(
         (l, h): [] for l in range(n_layers) for h in range(n_heads)
     }
 
-    for clean_b, corr_b in _batches(clean, corrupted, batch_size):
+    for _, _, clean_b, corr_b in _batches(clean, corrupted, batch_size):
 
         corr_z = {}
         with model.trace({"input_ids": corr_b}):
@@ -102,6 +103,7 @@ def path_patch_head_to_heads(
     metric: Callable[[torch.Tensor], torch.Tensor],
     *,
     batch_size: Optional[int] = None,
+    sender_positions: Optional[torch.Tensor] = None,
 ) -> PatchingResult:
     """Measure the indirect effect of each sender head on receiver heads' Q/K/V inputs.
 
@@ -112,6 +114,10 @@ def path_patch_head_to_heads(
       "v" — value input (S2-inhibition → NM): uses clean attn weights × patched V
       "q" — query input: recomputes attn with patched Q, clean K and V
       "k" — key input: recomputes attn with clean Q, patched K, clean V
+
+    sender_positions: optional LongTensor [N] restricting the patch to one token
+      position per example (e.g. word_idx["S2"] for Fig 12b). When None, the
+      sender's full z is patched at all positions (original behaviour).
 
     metric receives full logits [N, seq, vocab]; caller selects the position.
 
@@ -149,7 +155,11 @@ def path_patch_head_to_heads(
         (l, h): [] for l in range(n_layers) for h in range(n_heads)
     }
 
-    for clean_b, corr_b in _batches(clean, corrupted, batch_size):
+    for batch_start, batch_end, clean_b, corr_b in _batches(clean, corrupted, batch_size):
+        sender_pos_b = (
+            sender_positions[batch_start:batch_end].long()
+            if sender_positions is not None else None
+        )
 
         # Step 1: Cache z on corrupted.
         corr_z: Dict[int, torch.Tensor] = {}
@@ -200,7 +210,15 @@ def path_patch_head_to_heads(
             with model.trace({"input_ids": clean_b}):
                 for l in range(recv_min_l):
                     if l == sl:
-                        model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
+                        if sender_pos_b is not None:
+                            # Position-restricted patch: only replace head sh at the
+                            # specified token position per example, clean elsewhere.
+                            repl = clean_z[l].clone()
+                            idx_b = torch.arange(repl.shape[0])
+                            repl[idx_b, sender_pos_b, z_sl] = corr_z[sl][idx_b, sender_pos_b, z_sl]
+                            model.transformer.h[l].attn.c_proj.input[...] = repl
+                        else:
+                            model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
                     elif l not in recv_set:
                         model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
                     # Receiver layers: no write → c_attn runs naturally from modified residual.
