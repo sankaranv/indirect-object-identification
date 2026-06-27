@@ -101,55 +101,47 @@ def path_patch_head_to_heads(
     *,
     batch_size: Optional[int] = None,
 ) -> PatchingResult:
-    """Measure the indirect effect of each sender head on receiver heads' inputs.
+    """Measure the indirect effect of each sender head on receiver heads' Q/K/V inputs.
 
-    For each candidate sender (sl, sh), computes the causal effect of the path:
-      sender z (corrupted) → frozen residual stream → receiver layers run naturally → logit
+    For each candidate sender (sl, sh), measures the causal effect of the path:
+      sender z (corrupted) → residual stream → receiver heads' Q/K/V → logit
 
-    receiver_input: "q" | "k" | "v" — documents which component of the receiver is
-        the intended path target.  The implementation lets receiver layers run fully
-        naturally from the sender-modified residual stream, which simultaneously
-        captures Q, K, and V modifications.  This correctly handles S2-inhibition
-        heads that change NM heads' attention patterns via residual modification at
-        the query position (END), not just via the value stream.
+    receiver_input selects which component of the receiver is isolated:
+      "v" — value input (S2-inhibition → NM): uses clean attn weights × patched V
+      "q" — query input: recomputes attn with patched Q, clean K and V
+      "k" — key input: recomputes attn with clean Q, patched K, clean V
 
-    metric receives full logits [N, seq, vocab].
+    metric receives full logits [N, seq, vocab]; caller selects the position.
 
-    Algorithm
-    ---------
-    1. Corrupted trace: cache c_proj.input (concatenated head Z outputs) for every layer.
-    2. Clean trace: cache c_proj.input + clean logits.
-    3. For each sender (sl, sh):
-         a. Run clean with sender z-slice replaced from corrupted run.
-         b. All non-sender, non-receiver heads frozen to their clean z values;
-            receiver layers run completely naturally from the modified residual stream.
-         c. The receiver layers see a residual that has been modified by the sender's
-            corrupted z propagating through frozen-clean attention and natural MLP
-            in the intermediate blocks.
-         d. Receiver heads' natural Q, K, V, Z computations are all allowed to change,
-            capturing both direct V-modification and indirect Q-modification effects.
-    4. score = (clean_metric − patched_metric).mean()
-
-    Correctness: The S2-inhibition heads (7,3), (7,9), (8,6), (8,10) affect NM heads
-    by modifying the residual stream at the END position (their query position), which
-    changes NM heads' Q[END] and thus their attention pattern.  Patching block inputs
-    directly while analytically propagating only through MLPs discards the two-hop
-    path sender → residual_at_pos_X → NM_heads_attend_to_pos_X → modified_output →
-    downstream_NM_head → logit.  Letting receiver layers run naturally captures this.
-
-    nnsight 0.7 notes
-    -----------------
-    * Full writes to c_proj.input freeze the block's attention sub-forward-pass; this
-      is intentional for non-receiver layers to enforce the frozen-clean-signal path.
-    * Receiver layers have no intervention; c_attn runs naturally from the modified
-      residual stream.
+    Algorithm (4-step indirect-effect):
+    1. Corrupted trace: cache z (c_proj.input) for every layer.
+    2. Clean trace: cache z + receiver attn weights ("v") or receiver ln_1 ("q"/"k") + logits.
+    3. Per sender: run clean with sender z patched; freeze non-receiver/non-sender layers;
+       save receiver ln_1.output (no c_proj.input write for receivers → c_attn runs naturally).
+    4. Analytically compute receiver head z from saved ln_1 + weights; replay into clean run.
+       Effect = clean_metric − patched_metric.
     """
     assert receiver_input in ("q", "k", "v")
 
     n_layers = len(model.transformer.h)
     n_heads  = model.config.n_head
-    d_head   = model.config.n_embd // n_heads
+    d_model  = model.config.n_embd
+    d_head   = d_model // n_heads
     recv_set = {l for l, _ in receiver_heads}
+
+    # Precompute QKV weights for receiver heads on CPU/float32 (avoids MPS memory limits).
+    recv_W: Dict[Tuple[int, int], Dict[str, torch.Tensor]] = {}
+    for rl, rh in receiver_heads:
+        W = model.transformer.h[rl].attn.c_attn.weight.detach().cpu().float()
+        b = model.transformer.h[rl].attn.c_attn.bias.detach().cpu().float()
+        qs, qe = rh * d_head, (rh + 1) * d_head
+        recv_W[(rl, rh)] = {
+            "W_Q": W[:, qs:qe],            "b_Q": b[qs:qe],
+            "W_K": W[:, d_model + qs : d_model + qe],
+            "b_K": b[d_model + qs : d_model + qe],
+            "W_V": W[:, 2 * d_model + qs : 2 * d_model + qe],
+            "b_V": b[2 * d_model + qs : 2 * d_model + qe],
+        }
 
     batch_effects: Dict[Tuple[int, int], List[float]] = {
         (l, h): [] for l in range(n_layers) for h in range(n_heads)
@@ -157,45 +149,108 @@ def path_patch_head_to_heads(
 
     for clean_b, corr_b in _batches(clean, corrupted, batch_size):
 
-        # Step 1: Cache z on corrupted run.
+        # Step 1: Cache z on corrupted.
         corr_z: Dict[int, torch.Tensor] = {}
         with model.trace({"input_ids": corr_b}):
             for l in range(n_layers):
                 corr_z[l] = model.transformer.h[l].attn.c_proj.input.save()
 
-        # Step 2: Cache z + clean logits.
+        # Step 2: Cache z + auxiliary (attn weights for "v"; ln_1 for "q"/"k") + logits.
         clean_z: Dict[int, torch.Tensor] = {}
-        with model.trace({"input_ids": clean_b}):
-            for l in range(n_layers):
-                clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
-            clean_logits = model.lm_head.output.save()
+        clean_aux: Dict[int, torch.Tensor] = {}
+
+        if receiver_input == "v":
+            with model.trace({"input_ids": clean_b}, output_attentions=True):
+                for l in range(n_layers):
+                    clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+                for l in recv_set:
+                    # shape [N, n_heads, seq, seq] — attention probabilities
+                    clean_aux[l] = model.transformer.h[l].attn.output[1].save()
+                clean_logits = model.lm_head.output.save()
+        else:
+            with model.trace({"input_ids": clean_b}):
+                for l in range(n_layers):
+                    clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+                for l in recv_set:
+                    # shape [N, seq, d_model] — input to c_attn after layer norm
+                    clean_aux[l] = model.transformer.h[l].ln_1.output.save()
+                clean_logits = model.lm_head.output.save()
 
         clean_m = metric(clean_logits.cpu())
 
         for sl, sh in [(l, h) for l in range(n_layers) for h in range(n_heads)]:
             z_sl = slice(sh * d_head, (sh + 1) * d_head)
 
-            # Step 3: Sender z replaced; non-receiver/non-sender heads frozen to clean;
-            #          receiver layers run naturally → capture indirect path.
+            # Step 3: Patch sender, freeze non-receiver/non-sender; save receiver ln_1.
+            # Receiver layers get NO c_proj.input write → c_attn runs naturally → ln_1 is valid.
+            recv_ln1: Dict[int, torch.Tensor] = {}
             with model.trace({"input_ids": clean_b}):
                 for l in range(n_layers):
                     if l == sl:
-                        # Sender: replace z-slice with corrupted value.
-                        model.transformer.h[l].attn.c_proj.input[..., z_sl] = (
-                            corr_z[sl][..., z_sl]
-                        )
+                        model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[sl][..., z_sl]
                     elif l not in recv_set:
-                        # Non-receiver, non-sender: freeze entire attn output to clean.
                         model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
-                    # Receiver layers: no intervention — run naturally from modified residual.
+                    # Receiver layers: no write → c_attn runs naturally from modified residual.
+                for l in recv_set:
+                    if l != sl:  # guard: sender == receiver layer → c_attn skipped by slice-write
+                        recv_ln1[l] = model.transformer.h[l].ln_1.output.save()
+
+            # Analytically compute receiver z for step 4.
+            # recv_z_step4[rl] starts as clean_z[rl]; receiver head slices are overwritten.
+            recv_z_step4: Dict[int, torch.Tensor] = {}
+            for rl, rh in receiver_heads:
+                if rl not in recv_z_step4:
+                    recv_z_step4[rl] = clean_z[rl].clone()
+
+                if rl == sl:
+                    # Same-layer: sender and receiver computed in parallel — no indirect path.
+                    # Leave slice at clean value (recv_z_step4[rl] already initialised to clean_z).
+                    continue
+
+                w   = recv_W[(rl, rh)]
+                ln1 = recv_ln1[rl].cpu().float()  # [N, seq, d_model]
+
+                if receiver_input == "v":
+                    V_h = ln1 @ w["W_V"] + w["b_V"]                             # [N, seq, d_head]
+                    attn_h = clean_aux[rl].cpu().float()[:, rh, :, :]           # [N, seq, seq]
+                    z_h = attn_h @ V_h                                           # [N, seq, d_head]
+                else:
+                    cln = clean_aux[rl].cpu().float()                            # [N, seq, d_model]
+                    if receiver_input == "q":
+                        Q_h = ln1 @ w["W_Q"] + w["b_Q"]
+                        K_h = cln @ w["W_K"] + w["b_K"]
+                        V_h = cln @ w["W_V"] + w["b_V"]
+                    else:  # "k"
+                        Q_h = cln @ w["W_Q"] + w["b_Q"]
+                        K_h = ln1 @ w["W_K"] + w["b_K"]
+                        V_h = cln @ w["W_V"] + w["b_V"]
+                    seq = ln1.size(1)
+                    scores = (Q_h @ K_h.transpose(-1, -2)) * (d_head ** -0.5)  # [N, seq, seq]
+                    causal_mask = torch.triu(torch.ones(seq, seq, dtype=torch.bool), diagonal=1)
+                    scores = scores.masked_fill(causal_mask, float("-inf"))
+                    z_h = torch.softmax(scores, dim=-1) @ V_h                   # [N, seq, d_head]
+
+                # Move z_h to device/dtype of recv_z_step4 before assignment.
+                ref = recv_z_step4[rl]
+                recv_z_step4[rl][..., rh * d_head : (rh + 1) * d_head] = (
+                    z_h.to(dtype=ref.dtype, device=ref.device)
+                )
+
+            # Step 4: Replay receiver z into fresh clean run; freeze everything else.
+            with model.trace({"input_ids": clean_b}):
+                for l in range(n_layers):
+                    if l in recv_set:
+                        model.transformer.h[l].attn.c_proj.input[...] = recv_z_step4[l]
+                    else:
+                        model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
                 patched_logits = model.lm_head.output.save()
 
             patched_m = metric(patched_logits.cpu())
             batch_effects[(sl, sh)].append((clean_m - patched_m).mean().item())
-            del patched_logits
+            del patched_logits, recv_ln1, recv_z_step4
             clear_cache()
 
-        del corr_z, clean_z, clean_logits
+        del corr_z, clean_z, clean_aux, clean_logits
         clear_cache()
 
     scores = {k: sum(v) / len(v) for k, v in batch_effects.items()}
