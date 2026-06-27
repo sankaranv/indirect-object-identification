@@ -2,6 +2,7 @@
 Expected: (7,3), (7,9), (8,6), (8,10)
 """
 import os
+import random
 import sys
 import json
 import torch
@@ -23,6 +24,8 @@ THRESHOLD = 0.05
 
 
 def run():
+    random.seed(42)
+    np.random.seed(42)
     model   = load_model()
     ioi     = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
     abc     = ioi.gen_flipped_prompts(("IO", "RAND"))
