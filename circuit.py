@@ -77,7 +77,7 @@ def compute_means(
         z_heads = z.reshape(N, seq, n_heads, d_head)
         for group in groups:
             group_mean = z_heads[group].mean(0)
-            means[layer, group] = group_mean
+            means[layer, group] = group_mean.cpu()
     return means
 
 
