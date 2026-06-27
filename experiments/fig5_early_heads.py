@@ -5,6 +5,7 @@ PT: attend from each token back to its predecessor.
 IH: attend from S2 to the token after S1 (one-past the first occurrence).
 """
 import os, sys, json, torch
+import numpy as np
 import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 torch.set_grad_enabled(False)
@@ -57,7 +58,6 @@ def run(threshold: float = 0.2, seq_len: int = 50, batch: int = 50):
     pt = _avg(pt_q, pt_k)
     ih = _avg(ih_q, ih_k)
 
-    import numpy as np
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     for ax, scores, title in zip(axes, [dt, pt, ih],
                                   ["Duplicate token", "Previous token", "Induction"]):
