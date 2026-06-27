@@ -6,6 +6,7 @@ import csv
 import os
 import sys
 import json
+import random
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -27,6 +28,8 @@ THRESHOLD = -0.01
 
 def run():
     model = load_model()
+    random.seed(1)
+    np.random.seed(1)
     ioi   = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
     # ABC baseline: replace IO with random, then S with random
     abc   = ioi.gen_flipped_prompts(("IO", "RAND"))

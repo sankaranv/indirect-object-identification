@@ -58,24 +58,21 @@ def run() -> tuple:
     clear_cache()
     print(f"Baseline logit diff: {base_ld:.4f}")
 
-    # ── Indirect effect: zero-ablate MLP output at ALL positions ─────────────
-    print("Computing indirect effects (zero knockout)…")
-    indirect_effects = []
+    # ── Total effect: patch MLP_l output from ABC, everything else clean ─────
+    # Indirect effect is then: total − direct (per Wang et al. 2022 Appendix J).
+    print("Computing total effects (ABC → MLP patch)…")
+    total_effects = []
     for target_l in range(n_layers):
+        with model.trace({"input_ids": abc.toks.long()}):
+            abc_mlp_total = model.transformer.h[target_l].mlp.output.save()
         with model.trace({"input_ids": ioi.toks.long()}):
-            model.transformer.h[target_l].mlp.output[...] = 0.0
+            model.transformer.h[target_l].mlp.output[...] = abc_mlp_total
             logits = model.lm_head.output.save()
         ld = metric(logits.cpu()).mean().item()
-        indirect_effects.append(ld - base_ld)
-        del logits
+        total_effects.append(ld - base_ld)
+        del abc_mlp_total, logits
         clear_cache()
-        print(f"  layer {target_l}: indirect = {indirect_effects[-1]:+.4f}")
-
-    _bar_chart(
-        indirect_effects,
-        "MLP indirect effect (zero knockout)",
-        "plots/mlp/fig19_indirect.png",
-    )
+        print(f"  layer {target_l}: total = {total_effects[-1]:+.4f}")
 
     # ── Direct effect: path-patch MLP_l from ABC, freeze attn z + other MLPs ─
     # Cache clean attn z (separate trace from MLP saves to avoid nnsight conflicts).
@@ -123,6 +120,14 @@ def run() -> tuple:
         direct_effects,
         "MLP direct effect (path patching)",
         "plots/mlp/fig19_direct.png",
+    )
+
+    # Indirect effect = total − direct (Wang et al. 2022 Appendix J definition).
+    indirect_effects = [t - d for t, d in zip(total_effects, direct_effects)]
+    _bar_chart(
+        indirect_effects,
+        "MLP indirect effect (total − direct)",
+        "plots/mlp/fig19_indirect.png",
     )
 
     return indirect_effects, direct_effects

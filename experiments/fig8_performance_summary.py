@@ -30,9 +30,9 @@ def build_adversarial_dataset(ioi: IOIDataset, model):
                                            where we read logits to predict IO)
     """
     texts = []
-    for prompt in ioi.ioi_prompts:
+    for i, prompt in enumerate(ioi.ioi_prompts):
         io_name = prompt["IO"]
-        tmpl    = ADV_TEMPLATES[hash(io_name) % len(ADV_TEMPLATES)]
+        tmpl    = ADV_TEMPLATES[i % len(ADV_TEMPLATES)]
         prefix  = tmpl.format(IO=io_name)
         texts.append(prefix + " " + prompt["text"])
     enc     = model.tokenizer(texts, return_tensors="pt", padding=True)
