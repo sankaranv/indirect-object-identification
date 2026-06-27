@@ -26,7 +26,8 @@ def test_head_output_io_projection_shape():
         # GPT-2 Conv1D convention: c_proj.weight shape is [n_heads*d_head, d_model]
         layer.attn.c_proj.weight = torch.randn(n_heads * d_head, d_model)
         # c_proj.input.save() returns the pre-projection activations: [N, seq, n_heads*d_head]
-        layer.attn.c_proj.input.save.return_value = torch.randn(N, seq, n_heads * d_head)
+        z_val = torch.randn(N, seq, n_heads * d_head)
+        layer.attn.c_proj.input.save = MagicMock(return_value=z_val)
         fake_layers.append(layer)
     model.transformer.h = fake_layers
 
