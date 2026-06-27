@@ -70,6 +70,54 @@ def unembed_projections_at_positions(
     return out
 
 
+def head_output_io_projection(
+    model,
+    tokens: torch.Tensor,
+    end_positions: torch.Tensor,
+    io_token_ids: list,
+    s_token_ids: list,
+) -> Dict[Tuple[int, int], torch.Tensor]:
+    """Per-example projection of each head's output at END onto the IO−S direction.
+
+    For each head, computes: (z_h @ W_O_h) · (W_U[IO] − W_U[S])
+    where z_h is the pre-projection hidden state for that head at END, sliced
+    from c_proj.input (shape [N, seq, n_heads*d_head] in GPT-2 Conv1D convention).
+
+    tokens          : [N, seq]
+    end_positions   : [N] — per-example END token index
+    io_token_ids    : list[int] length N — token ID of each example's IO name
+    s_token_ids     : list[int] length N — token ID of each example's S name
+    Returns         : {(layer, head): Tensor[N]} — one scalar per example
+    """
+    n_layers = len(model.transformer.h)
+    n_heads  = model.config.n_head
+    d_head   = model.config.n_embd // n_heads
+    N        = tokens.size(0)
+
+    W_U    = model.lm_head.weight.detach().cpu().float()   # [vocab, d_model]
+    io_ids = torch.tensor(io_token_ids)
+    s_ids  = torch.tensor(s_token_ids)
+    io_dir = W_U[io_ids] - W_U[s_ids]                     # [N, d_model]
+
+    result: Dict[Tuple[int, int], torch.Tensor] = {}
+    for layer in range(n_layers):
+        # GPT-2 Conv1D: c_proj.weight shape is [n_heads*d_head, d_model]
+        W_O = model.transformer.h[layer].attn.c_proj.weight.detach().cpu().float()
+        with model.trace({"input_ids": tokens}):
+            z = model.transformer.h[layer].attn.c_proj.input.save()
+        # z: [N, seq, n_heads*d_head]
+        z_end = z[torch.arange(N), end_positions].cpu().float()   # [N, n_heads*d_head]
+        for head in range(n_heads):
+            z_h   = z_end[:, head * d_head : (head + 1) * d_head]  # [N, d_head]
+            W_O_h = W_O[head * d_head : (head + 1) * d_head, :]    # [d_head, d_model]
+            out_h = z_h @ W_O_h                                     # [N, d_model]
+            proj  = (out_h * io_dir).sum(-1)                        # [N]
+            result[(layer, head)] = proj
+        del z
+        clear_cache()
+    return result
+
+
 def ov_copy_strength(model, layer: int, head: int) -> float:
     """How strongly head (layer, head)'s OV circuit copies its attended token to the output.
 
