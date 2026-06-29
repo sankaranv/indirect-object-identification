@@ -16,6 +16,7 @@ model = load_model()
 ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
 abc = ioi.gen_flipped_prompts(("IO", "RAND"))
 abc = abc.gen_flipped_prompts(("S", "RAND"))
+abc = abc.gen_flipped_prompts(("S1", "RAND"))
 end_pos = ioi.word_idx["end"]
 N = len(ioi)
 

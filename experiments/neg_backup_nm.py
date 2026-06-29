@@ -134,6 +134,7 @@ def run(nnm_threshold=0.2, bnm_threshold=0.05):
     ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
+    abc = abc.gen_flipped_prompts(("S1", "RAND"))
     means = compute_means(model, abc.toks.long(), abc.groups)
 
     N = len(ioi)
