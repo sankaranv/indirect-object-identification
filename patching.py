@@ -5,7 +5,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 
-from utils import clear_cache
+from model import clear_cache
 
 
 @dataclasses.dataclass
@@ -46,9 +46,11 @@ def path_patch_head_to_logits(
     *,
     batch_size: Optional[int] = None,
 ) -> PatchingResult:
-    """For each head, patch its z-output from corrupted into a clean run; measure metric change.
+    """For each head, patch its z-output from corrupted into a clean run;
+    measure metric change.
 
-    metric: Callable[[Tensor[N, seq, vocab]], Tensor[N]] — receives full logits [N, seq, vocab].
+    metric: Callable[[Tensor[N, seq, vocab]], Tensor[N]] — receives full logits
+    [N, seq, vocab].
     """
     n_layers = len(model.transformer.h)
     n_heads = model.config.n_head
@@ -90,8 +92,10 @@ def path_patch_head_to_logits(
                 patched_logits = model.lm_head.output.save()
 
             patched_m = metric(patched_logits.cpu())
-            # Sign matches paper (Wang et al. 2022): patched − clean is negative for helpful heads
-            # (corrupting them hurts), positive for NNMs. Reversed from "contribution" framing.
+            # Sign matches paper (Wang et al. 2022): patched − clean is negative for
+            # helpful heads
+            # (corrupting them hurts), positive for NNMs. Reversed from
+            # "contribution" framing.
             batch_effects[(sender_layer, sender_head)].append(
                 (patched_m - clean_m).mean().item()
             )
@@ -118,7 +122,8 @@ def path_patch_head_to_heads(
 ) -> PatchingResult:
     """Measure the indirect effect of each sender head on receiver heads' Q/K/V inputs.
 
-    For each candidate sender (sender_layer, sender_head), measures the causal effect of the path:
+    For each candidate sender (sender_layer, sender_head), measures the causal effect
+    of the path:
       sender z (corrupted) → residual stream → receiver heads' Q/K/V → logit
 
     receiver_input selects which component of the receiver is isolated:
@@ -134,10 +139,14 @@ def path_patch_head_to_heads(
 
     Algorithm (4-step indirect-effect):
     1. Corrupted trace: cache z (c_proj.input) for every layer.
-    2. Clean trace: cache z + receiver attn weights ("v") or receiver ln_1 ("q"/"k") + logits.
-    3. Per sender: run clean with sender z patched; freeze non-receiver/non-sender layers;
-       save receiver ln_1.output (no c_proj.input write for receivers → c_attn runs naturally).
-    4. Analytically compute receiver head z from saved ln_1 + weights; replay into clean run.
+    2. Clean trace: cache z + receiver attn weights ("v") or receiver ln_1
+       ("q"/"k") + logits.
+    3. Per sender: run clean with sender z patched; freeze non-receiver/non-sender
+       layers;
+       save receiver ln_1.output (no c_proj.input write for receivers → c_attn runs
+       naturally).
+    4. Analytically compute receiver head z from saved ln_1 + weights; replay into
+       clean run.
        Effect = clean_metric − patched_metric.
     """
     assert receiver_input in ("q", "k", "v")
@@ -149,7 +158,8 @@ def path_patch_head_to_heads(
     # head dimension, number of heads, number of layers
     receiver_layers = {receiver_layer for receiver_layer, _ in receiver_heads}
 
-    # Precompute QKV weights for receiver heads on CPU/float32 (avoids MPS memory limits).
+    # Precompute QKV weights for receiver heads on CPU/float32 (avoids MPS
+    # memory limits).
     receiver_weights: Dict[Tuple[int, int], Dict[str, torch.Tensor]] = {}
     for receiver_layer, receiver_head in receiver_heads:
         W = (
@@ -219,21 +229,26 @@ def path_patch_head_to_heads(
             sender_head_slice = slice(sender_head * d_head, (sender_head + 1) * d_head)
 
             # Step 3: Patch sender, freeze non-receiver/non-sender; save receiver ln_1.
-            # Receiver layers get NO c_proj.input write → c_attn runs naturally → ln_1 is valid.
+            # Receiver layers get NO c_proj.input write → c_attn runs naturally →
+            # ln_1 is valid.
             #
-            # nnsight 0.7 constraint: writing c_proj.input for any layer AFTER the earliest
-            # receiver prevents ln_1.output.save() from being provided for receiver layers.
-            # Fix: only freeze layers STRICTLY BEFORE recv_min; post-receiver non-recv layers
+            # nnsight 0.7 constraint: writing c_proj.input for any layer AFTER the
+            # earliest
+            # receiver prevents ln_1.output.save() from being provided for receiver
+            # layers.
+            # Fix: only freeze layers STRICTLY BEFORE recv_min; post-receiver non-recv
+            # layers
             # are left to run freely (they do not affect receiver ln_1 inputs).
-            # Saves must be registered in ascending layer order (nnsight proxy ordering).
+            # Saves must be registered in ascending layer order (nnsight proxy
+            # ordering).
             min_receiver_layer = min(receiver_layers)
             receiver_ln1: Dict[int, torch.Tensor] = {}
             with model.trace({"input_ids": clean_b}):
                 for layer in range(min_receiver_layer):
                     if layer == sender_layer:
                         if sender_pos_b is not None:
-                            # Position-restricted patch: only replace head sender_head at the
-                            # specified token position per example, clean elsewhere.
+                            # Position-restricted patch: only replace head
+                            # sender_head at the specified position per example.
                             repl = clean_z[layer].clone()
                             batch_idx = torch.arange(repl.shape[0])
                             repl[batch_idx, sender_pos_b, sender_head_slice] = (
@@ -250,27 +265,32 @@ def path_patch_head_to_heads(
                         model.transformer.h[layer].attn.c_proj.input[...] = clean_z[
                             layer
                         ]
-                    # Receiver layers: no write → c_attn runs naturally from modified residual.
+                    # Receiver layers: no write → c_attn runs naturally from modified
+                    # residual.
                 for layer in sorted(
                     receiver_layers
                 ):  # ascending order — nnsight requires in-order saves
                     if (
                         layer != sender_layer
-                    ):  # guard: sender == receiver layer → c_attn skipped by slice-write
+                    ):  # guard: sender == receiver layer → c_attn skipped by
+                    # slice-write
                         receiver_ln1[layer] = model.transformer.h[
                             layer
                         ].ln_1.output.save()
 
             # Analytically compute receiver z for step 4.
-            # receiver_z[receiver_layer] starts as clean_z[receiver_layer]; receiver head slices are overwritten.
+            # receiver_z[receiver_layer] starts as clean_z[receiver_layer]; receiver
+            # head slices are overwritten.
             receiver_z: Dict[int, torch.Tensor] = {}
             for receiver_layer, receiver_head in receiver_heads:
                 if receiver_layer not in receiver_z:
                     receiver_z[receiver_layer] = clean_z[receiver_layer].clone()
 
                 if receiver_layer == sender_layer:
-                    # Same-layer: sender and receiver computed in parallel — no indirect path.
-                    # Leave slice at clean value (receiver_z[receiver_layer] already initialised to clean_z).
+                    # Same-layer: sender and receiver computed in parallel — no
+                    # indirect path.
+                    # Leave slice at clean value (receiver_z[receiver_layer] already
+                    # initialised to clean_z).
                     continue
 
                 w = receiver_weights[(receiver_layer, receiver_head)]
@@ -322,7 +342,8 @@ def path_patch_head_to_heads(
                 patched_logits = model.lm_head.output.save()
 
             patched_m = metric(patched_logits.cpu())
-            # Sign matches paper (Wang et al. 2022): patched − clean is negative for helpful heads.
+            # Sign matches paper (Wang et al. 2022): patched − clean is negative for
+            # helpful heads.
             batch_effects[(sender_layer, sender_head)].append(
                 (patched_m - clean_m).mean().item()
             )

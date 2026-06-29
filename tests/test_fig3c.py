@@ -1,14 +1,16 @@
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def test_head_output_io_projection_shape():
     """Shape test using a synthetic mock model — no real GPT-2 load."""
-    import torch
     from contextlib import contextmanager
     from unittest.mock import MagicMock
+
+    import torch
+
     from analysis import head_output_io_projection
 
     n_layers, n_heads, d_model = 2, 4, 8
@@ -27,7 +29,8 @@ def test_head_output_io_projection_shape():
         layer = MagicMock()
         # GPT-2 Conv1D convention: c_proj.weight shape is [n_heads*d_head, d_model]
         layer.attn.c_proj.weight = torch.randn(n_heads * d_head, d_model)
-        # c_proj.input.save() returns the pre-projection activations: [N, seq, n_heads*d_head]
+        # c_proj.input.save() returns the pre-projection activations:
+        # [N, seq, n_heads*d_head]
         z_val = torch.randn(N, seq, n_heads * d_head)
         layer.attn.c_proj.input.save = MagicMock(return_value=z_val)
         fake_layers.append(layer)

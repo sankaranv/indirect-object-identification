@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -27,7 +27,7 @@ def test_patching_result_top_k():
 
 
 def test_imports():
-    from patching import path_patch_head_to_logits, path_patch_head_to_heads
+    from patching import path_patch_head_to_heads, path_patch_head_to_logits
 
     assert callable(path_patch_head_to_logits)
     assert callable(path_patch_head_to_heads)

@@ -2,21 +2,21 @@
 Expected: (7,3), (7,9), (8,6), (8,10)
 """
 
+import json
 import os
 import random
 import sys
-import json
-import torch
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
-from patching import path_patch_head_to_heads
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
+from patching import path_patch_head_to_heads
 
 NM_HEADS = [(9, 9), (10, 0), (9, 6)]
 EXPECTED = {(7, 3), (7, 9), (8, 6), (8, 10)}

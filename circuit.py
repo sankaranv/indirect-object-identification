@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import torch
 from typing import Dict, List, Set, Tuple
 
+import torch
 
 CIRCUIT: Dict[str, List[Tuple[int, int]]] = {
     "name_mover": [(9, 9), (10, 0), (9, 6)],
@@ -82,7 +82,8 @@ def compute_means(
     means = torch.zeros(n_layers, batch_size, seq_len, n_heads, d_head)
     # Per-template-group means capture the token-distribution shift from ABC corruption
     # (IO/S names replaced by random names) without contaminating the mean with the
-    # original name tokens. This matches the mean-ablation methodology in Wang et al. 2022.
+    # original name tokens. This matches the mean-ablation methodology in
+    # Wang et al. 2022.
     for layer in range(n_layers):
         with model.trace({"input_ids": corrupted_toks}):
             z = model.transformer.h[layer].attn.c_proj.input.save()
@@ -101,7 +102,8 @@ def run_with_mean_ablation(
     seq_pos_to_keep: Dict[str, str],
     word_idx: Dict[str, torch.Tensor],
 ) -> torch.Tensor:
-    """Run model replacing z with means except circuit heads at their relevant positions.
+    """Run model replacing z with means except circuit heads at their relevant
+    positions.
 
     Returns logits [N, seq, vocab].
     """
@@ -121,7 +123,8 @@ def run_with_mean_ablation(
 
     # Non-circuit heads are replaced with their per-template-group mean activation,
     # isolating the circuit's contribution while preserving the residual stream's
-    # statistical structure. Circuit heads at their relevant sequence positions are kept clean.
+    # statistical structure. Circuit heads at their relevant sequence positions are
+    # kept clean.
     with model.trace({"input_ids": clean_toks}):
         for layer in range(n_layers):
             z = model.transformer.h[layer].attn.c_proj.input

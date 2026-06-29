@@ -11,19 +11,19 @@ composed key signal in the IOI task context, invisible on random sequences.
 An IOI-context attention scan (S2→S for DT, S2→S+1 for IH) surfaces them.
 """
 
+import json
 import os
 import sys
-import json
-import torch
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
 from analysis import attention_to_positions
 from ioi_dataset import IOIDataset
+from model import load_model
 
 # Full circuit head sets including K-composition heads found via IOI-context scan.
 # (0,10) scores 0.25 on S2→S in IOI context; (5,8) scores 0.44 and (5,9) scores 0.12
@@ -62,7 +62,8 @@ def run(
     ih_k = torch.arange(1, seq_len + 1).repeat(batch, 1)
 
     def _mean_attn(query_cols, key_cols):
-        # Average over the seq_len positions; attention_to_positions handles one (q,k) pair per example
+        # Average over the seq_len positions; attention_to_positions handles one (q,k)
+        # pair per example
         totals: dict = {}
         for pos_idx in range(seq_len):
             q = query_cols[:, pos_idx]  # [batch]
@@ -96,7 +97,8 @@ def run(
     pt_h = {(layer, head) for (layer, head), v in pt.items() if v > threshold}
     ih_h = {(layer, head) for (layer, head), v in ih.items() if v > threshold}
 
-    # IOI-context scan: surfaces K-composition heads that require prior head activations.
+    # IOI-context scan: surfaces K-composition heads that require prior head
+    # activations.
     # (0,10) attends S2→S only in the IOI context; (5,8),(5,9) attend S2→S+1 likewise.
     ioi = IOIDataset("mixed", N=200, tokenizer=model.tokenizer, prepend_bos=False)
     dt_ioi = attention_to_positions(

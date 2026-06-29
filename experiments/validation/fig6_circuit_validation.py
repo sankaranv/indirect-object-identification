@@ -6,19 +6,19 @@ groups (examples sharing the same syntactic template) rather than per-example
 singletons, matching the method described in the paper.
 """
 
+import json
 import os
 import sys
-import json
-import torch
+
 import matplotlib.pyplot as plt
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
 from circuit import CIRCUIT, SEQ_POS_TO_KEEP, compute_means, run_with_mean_ablation
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
 
 
 def run():

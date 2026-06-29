@@ -21,9 +21,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import clear_cache, load_model
+from model import clear_cache, load_model
 
 
 def compute_all_scores(model, seq_len: int = 100, batch: int = 5) -> tuple:

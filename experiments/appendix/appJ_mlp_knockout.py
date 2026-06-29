@@ -1,18 +1,18 @@
 """Appendix J / Fig 19: Direct and indirect MLP effects on logit diff."""
 
 import os
-import sys
 import random
-import torch
-import numpy as np
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model, clear_cache
-from metrics import logit_diff
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import clear_cache, load_model
 
 
 def _bar_chart(effects: list, title: str, fname: str) -> None:
@@ -97,7 +97,8 @@ def run() -> tuple:
             abc_mlp = model.transformer.h[target_l].mlp.output.save()
 
         # Patch: freeze all attn head z's at clean values; swap target MLP from ABC;
-        # keep all other MLP outputs at clean values → isolates direct path MLP_l → logit.
+        # keep all other MLP outputs at clean values → isolates direct path
+        # MLP_l → logit.
         with model.trace({"input_ids": ioi.toks.long()}):
             for layer in range(n_layers):
                 model.transformer.h[layer].attn.c_proj.input[...] = clean_z[layer]

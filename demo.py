@@ -1,14 +1,8 @@
-import os
-import sys
 import torch
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ioi")
-)
-
-from utils import load_model
-from metrics import logit_diff
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
 
 torch.set_grad_enabled(False)
 

@@ -1,12 +1,12 @@
 """Appendix K / Fig 20: Export minimality companion sets to CSV."""
 
+import csv
 import os
 import sys
-import csv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from circuit import K_FOR_EACH_COMPONENT, CIRCUIT
+from circuit import CIRCUIT, K_FOR_EACH_COMPONENT
 
 
 def run():

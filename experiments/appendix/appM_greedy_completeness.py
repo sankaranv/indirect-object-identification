@@ -9,22 +9,21 @@ below the diagonal show the naive circuit is incomplete.
 Fig 22 / results CSV: K sets found by greedy Algorithm 3.
 """
 
-import os
-import sys
-import random
 import csv
-import torch
-import numpy as np
+import os
+import random
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
 from circuit import CIRCUIT, SEQ_POS_TO_KEEP, compute_means, run_with_mean_ablation
 from ioi_dataset import IOIDataset
-
+from metrics import logit_diff
+from model import load_model
 
 NAIVE_CIRCUIT = {
     "name_mover": CIRCUIT["name_mover"],
@@ -162,7 +161,8 @@ def run():
         incompleteness = abs(f_ck - f_mk)
         greedy_runs.append((K, f_ck, f_mk, incompleteness))
         print(
-            f"  seed={seed}: |K|={len(K)}, F(C\\K)={f_ck:.3f}, incompleteness={incompleteness:.4f}"
+            f"  seed={seed}: |K|={len(K)}, F(C\\K)={f_ck:.3f},"
+            f" incompleteness={incompleteness:.4f}"
         )
 
     greedy_runs.sort(key=lambda x: x[3], reverse=True)

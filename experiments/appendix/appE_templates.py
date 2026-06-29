@@ -1,12 +1,12 @@
 """Appendix E / Fig 14: Save IOI dataset templates to CSV."""
 
+import csv
 import os
 import sys
-import csv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from ioi_dataset import BABA_TEMPLATES, ABBA_TEMPLATES
+from ioi_dataset import ABBA_TEMPLATES, BABA_TEMPLATES
 
 
 def run():

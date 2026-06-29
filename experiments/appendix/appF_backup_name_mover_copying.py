@@ -11,19 +11,18 @@ upper-right quadrant: they attend to IO *and* write in the IO direction.
 """
 
 import os
-import sys
 import random
+import sys
 
-import torch
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model, clear_cache
 from analysis import head_output_io_projection
 from ioi_dataset import IOIDataset
+from model import clear_cache, load_model
 
 BNM_HEADS = [(10, 10), (10, 2), (11, 2), (9, 7)]
 OUT_DIR = "plots/backup"

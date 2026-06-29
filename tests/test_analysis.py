@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 def test_imports():
     from analysis import (
         attention_to_positions,
-        unembed_projections_at_positions,
         ov_copy_strength,
+        unembed_projections_at_positions,
     )
 
     assert callable(attention_to_positions)
@@ -18,8 +18,9 @@ def test_imports():
 
 def test_attention_to_positions_returns_dict():
     import torch
+
     from analysis import attention_to_positions
-    from utils import load_model
+    from model import load_model
 
     model = load_model()
     N, seq = 2, 10
@@ -35,8 +36,9 @@ def test_attention_to_positions_returns_dict():
 
 def test_unembed_projections_shape():
     import torch
+
     from analysis import unembed_projections_at_positions
-    from utils import load_model
+    from model import load_model
 
     model = load_model()
     N, seq = 2, 10

@@ -1,4 +1,5 @@
-"""Figure 3c: scatter of attention-to-IO vs IO-direction projection for Name Mover heads.
+"""Figure 3c: scatter of attention-to-IO vs IO-direction projection for Name Mover
+heads.
 
 Each point in the scatter is one (head, example) pair.  The three Name Mover heads
 (9.9, 10.0, 9.6) are shown in distinct colours/markers.
@@ -10,18 +11,18 @@ Heads that attend to IO and copy it should cluster in the upper-right quadrant.
 """
 
 import os
-import sys
 import random
-import torch
-import numpy as np
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model, clear_cache
 from analysis import head_output_io_projection
 from ioi_dataset import IOIDataset
+from model import clear_cache, load_model
 
 NM_HEADS = [(9, 9), (10, 0), (9, 6)]
 COLORS = {(9, 9): "#1f77b4", (10, 0): "#ff7f0e", (9, 6): "#2ca02c"}

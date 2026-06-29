@@ -1,19 +1,20 @@
-"""Bar chart of logit diff when patching each SI head individually and all four together."""
+"""Bar chart of logit diff when patching each SI head individually and all four
+together."""
 
 import os
-import sys
 import random
-import torch
+import sys
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
 
 SI_HEADS = [(7, 3), (7, 9), (8, 6), (8, 10)]
 
@@ -130,7 +131,8 @@ def run():
         "results/s2_inhibition/si_combined_effects.csv", index=False
     )
     print(
-        "Saved plots/s2_inhibition/fig4c.png and results/s2_inhibition/si_combined_effects.csv"
+        "Saved plots/s2_inhibition/fig4c.png and"
+        " results/s2_inhibition/si_combined_effects.csv"
     )
 
 

@@ -1,20 +1,21 @@
-"""Appendix F / Fig 15: BNM bars — head→logit causal effect before and after NM knockout."""
+"""Appendix F / Fig 15: BNM bars — head→logit causal effect before and after
+NM knockout."""
 
 import os
-import sys
 import random
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
+import sys
+
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model, clear_cache
-from metrics import logit_diff
-from ioi_dataset import IOIDataset
 from circuit import compute_means
+from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import clear_cache, load_model
 
 NM_HEADS = [(9, 9), (10, 0), (9, 6)]
 NNM_HEADS = [(10, 7), (11, 10)]
@@ -104,7 +105,8 @@ def _patching_loop(
                             corr_z[sl][..., z_sl]
                         )
                         # For NM heads at the sender layer (different head), write their
-                        # mean-ablated slice.  These slices don't overlap with z_sl (sh != nm_h).
+                        # mean-ablated slice. These slices don't overlap with
+                        # z_sl (sh != nm_h).
                         if nm_by_layer.get(layer):
                             for nm_h in nm_by_layer[layer]:
                                 if nm_h != sh:
@@ -114,8 +116,10 @@ def _patching_loop(
                                     ] = nm_means[(layer, nm_h)]
                     else:
                         if nm_by_layer.get(layer):
-                            # Build combined tensor in Python: clone clean_z, override NM slices.
-                            # Single write — avoids a second proxy-write that could be out-of-order.
+                            # Build combined tensor: clone clean_z, override NM
+                            # slices.
+                            # Single write — avoids a second proxy-write that
+                            # could be out-of-order.
                             z_comb = clean_z[layer].clone()
                             for nm_h in nm_by_layer[layer]:
                                 nm_sl = slice(nm_h * d_head, (nm_h + 1) * d_head)

@@ -10,22 +10,22 @@ which are invisible to contribution-diff because ablating NMs at layer 9 does
 not change the residual entering layer 9.
 """
 
-import os
-import sys
 import json
+import os
 import random
-import torch
-import numpy as np
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model, clear_cache
-from metrics import logit_diff
 from circuit import compute_means
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import clear_cache, load_model
 
 NM_HEADS = [(9, 9), (10, 0), (9, 6)]
 EXPECTED_NNM = {(10, 7), (11, 10)}
@@ -165,7 +165,8 @@ def run(nnm_threshold=0.2, bnm_threshold=0.05):
     ax.set_xlabel("Head")
     ax.set_ylabel("Layer")
     ax.set_title(
-        "Path patching effect in NM-ablated model\n(negative = BNM, positive = NNM-like)"
+        "Path patching effect in NM-ablated model\n"
+        "(negative = BNM, positive = NNM-like)"
     )
     plt.colorbar(im, ax=ax)
     plt.tight_layout()

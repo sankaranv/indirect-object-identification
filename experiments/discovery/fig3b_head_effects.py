@@ -1,12 +1,14 @@
-"""Sorted bar chart of head→logit path-patching causal effects, colored by circuit role."""
+"""Sorted bar chart of head→logit path-patching causal effects, colored by circuit
+role."""
 
 import os
 import sys
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import pandas as pd
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 HEAD_TYPE_COLORS = {
     "name_mover": "#2196F3",

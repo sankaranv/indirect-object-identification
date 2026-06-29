@@ -1,27 +1,26 @@
-"""Appendix C / Fig 12b: Path patching to S-Inhibition head keys at S2.
+"""Appendix D / Fig 13b: Path patching to Induction head keys at S1+1.
 
-Which sender heads causally affect the KEY inputs of S-Inhibition heads?
+Which sender heads causally affect the KEY inputs of Induction heads?
 Uses path_patch_head_to_heads with receiver_input="k"; metric is logit diff
 at the END position (final token), matching the main patching experiments.
 """
 
 import os
-import sys
 import random
+import sys
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
-from patching import path_patch_head_to_heads
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
+from patching import path_patch_head_to_heads
 
-SI_HEADS = [(7, 3), (7, 9), (8, 6), (8, 10)]
+IH_HEADS = [(5, 5), (5, 8), (5, 9), (6, 9)]
 
 
 def run():
@@ -49,13 +48,13 @@ def run():
         model,
         ioi.toks.long(),
         abc.toks.long(),
-        receiver_heads=SI_HEADS,
+        receiver_heads=IH_HEADS,
         receiver_input="k",
         metric=metric,
     )
 
-    si_min = min(layer for layer, _ in SI_HEADS)
-    scores = {k: v for k, v in result.scores.items() if k[0] < si_min}
+    ih_min = min(layer for layer, _ in IH_HEADS)
+    scores = {k: v for k, v in result.scores.items() if k[0] < ih_min}
 
     n_layers = len(model.transformer.h)
     n_heads = model.config.n_head
@@ -68,14 +67,14 @@ def run():
     im = ax.imshow(arr, cmap="RdBu", vmin=-vmax, vmax=vmax)
     ax.set_xlabel("Head")
     ax.set_ylabel("Layer")
-    ax.set_title("Head → S-Inhibition head keys causal effect at S2")
+    ax.set_title("Head → Induction head keys causal effect at S1+1")
     plt.colorbar(im, ax=ax)
     plt.tight_layout()
 
-    os.makedirs("plots/si_keys", exist_ok=True)
-    plt.savefig("plots/si_keys/fig12b.png", dpi=150)
+    os.makedirs("plots/ih_keys", exist_ok=True)
+    plt.savefig("plots/ih_keys/fig13b.png", dpi=150)
     plt.close()
-    print("Saved plots/si_keys/fig12b.png")
+    print("Saved plots/ih_keys/fig13b.png")
 
     return result
 

@@ -1,19 +1,18 @@
 # indirect-object-identification/experiments/fig7_minimality.py
-"""Figure 7: Minimality — every circuit head has score > 0 when companions are ablated."""
+"""Figure 7: Minimality — every circuit head has score > 0 when companions are
+ablated."""
 
-import os
-import sys
 import json
+import os
 import random
-import torch
-import numpy as np
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
 from circuit import (
     CIRCUIT,
     K_FOR_EACH_COMPONENT,
@@ -22,6 +21,8 @@ from circuit import (
     run_with_mean_ablation,
 )
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
 
 
 def ablate_heads(base_circuit, heads_to_remove):
@@ -90,7 +91,8 @@ def run():
         scores[head] = score
         status = "OK" if score > 0 else "FAIL"
         print(
-            f"  {head_to_type.get(head, '?'):25s} {head}  abs_score={score:+.4f}  {status}"
+            f"  {head_to_type.get(head, '?'):25s} {head}  "
+            f"abs_score={score:+.4f}  {status}"
         )
 
     # Plot
@@ -117,7 +119,8 @@ def run():
 
     failed = [h for h, s in scores.items() if s <= 0]
     print(
-        f"\n[Figure 7]  {len(all_heads)} heads evaluated; {len(failed)} failed minimality"
+        f"\n[Figure 7]  {len(all_heads)} heads evaluated;"
+        f" {len(failed)} failed minimality"
     )
     assert not failed, f"Minimality FAIL: {failed} have score ≤ 0"
     print("PASS")

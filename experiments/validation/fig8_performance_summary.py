@@ -1,19 +1,19 @@
 """Figure 8: GPT-2 performance on IOI, ABC, and adversarial datasets."""
 
 import os
-import sys
 import random
-import torch
+import sys
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
 
 ADV_TEMPLATES = [
     "{IO} had a good day.",
@@ -135,7 +135,8 @@ def run():
     print("\nResults:")
     for _, r in df.iterrows():
         print(
-            f"  {r['dataset']:20s}: LD={r['logit_diff']:+.3f}  IO_prob={r['io_prob']:.3f}  S_rate={r['s_over_io_rate']:.3f}"
+            f"  {r['dataset']:20s}: LD={r['logit_diff']:+.3f}"
+            f"  IO_prob={r['io_prob']:.3f}  S_rate={r['s_over_io_rate']:.3f}"
         )
 
     # ── Plot ──────────────────────────────────────────────────────────────────

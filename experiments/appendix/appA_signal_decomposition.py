@@ -16,8 +16,8 @@ Run from indirect-object-identification/:
 
 import copy
 import os
-import re
 import random
+import re
 import sys
 
 import matplotlib
@@ -28,12 +28,11 @@ import torch
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
-from utils import clear_cache, load_model
+from model import clear_cache, load_model
 
 # S-Inhibition heads (Appendix A of the IOI paper)
 SI_HEADS = [(7, 3), (7, 9), (8, 6), (8, 10)]

@@ -4,25 +4,26 @@ Expected: (9,9), (10,0), (9,6)
 """
 
 import csv
-import os
-import sys
 import json
+import os
 import random
-import torch
-import numpy as np
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils import load_model
-from metrics import logit_diff
-from patching import path_patch_head_to_logits
 from analysis import ov_copy_strength
 from ioi_dataset import IOIDataset
+from metrics import logit_diff
+from model import load_model
+from patching import path_patch_head_to_logits
 
 EXPECTED = {(9, 9), (10, 0), (9, 6)}
-# With paper sign convention (patched − clean), helpful heads have NEGATIVE causal effects.
+# With paper sign convention (patched − clean), helpful heads have NEGATIVE causal
+# effects.
 THRESHOLD = -0.01
 
 
@@ -65,7 +66,8 @@ def run():
         for (layer, head), v in sorted(effects.items()):
             w.writerow({"layer": layer, "head": head, "causal_effect": v})
 
-    # NMs have negative causal effects (patched − clean): corrupting them hurts logit diff.
+    # NMs have negative causal effects (patched − clean): corrupting them hurts
+    # logit diff.
     candidate_heads = [
         (layer, head) for (layer, head), e in effects.items() if e < THRESHOLD
     ]

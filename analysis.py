@@ -4,10 +4,11 @@ from typing import Dict, Tuple
 
 import torch
 
-from utils import clear_cache
+from model import clear_cache
 
 # Standard weight matrix names: W_E = token embedding, W_U = unembedding,
 # W_Q/K/V = attention projections, W_O = output projection
+
 
 
 def attention_to_positions(
@@ -40,7 +41,6 @@ def attention_to_positions(
 
     return result
 
-
 def unembed_projections_at_positions(
     model,
     tokens: torch.Tensor,
@@ -64,7 +64,8 @@ def unembed_projections_at_positions(
     for layer in range(n_layers):
         with model.trace({"input_ids": tokens}):
             resid = model.transformer.h[layer].output.save()
-        # resid: [batch_size, seq, d_model]  — nnsight 0.7 unwraps the block output tuple
+        # resid: [batch_size, seq, d_model] — nnsight 0.7 unwraps the block
+        # output tuple
         resid_at_pos = resid[
             torch.arange(batch_size), positions, :
         ]  # [batch_size, d_model]
@@ -115,7 +116,7 @@ def head_output_io_projection(
             z[torch.arange(batch_size), end_positions].cpu().float()
         )  # [batch_size, n_heads*d_head]
         for head in range(n_heads):
-            # z_h: head output [batch_size, d_head]; W_O_h: output projection for this head [d_head, d_model]
+            # z_h: [batch_size, d_head]; W_O_h: output projection [d_head, d_model]
             z_h = z_end[:, head * d_head : (head + 1) * d_head]  # [batch_size, d_head]
             W_O_h = W_O[head * d_head : (head + 1) * d_head, :]  # [d_head, d_model]
             out_h = z_h @ W_O_h  # [N, d_model]
@@ -127,7 +128,8 @@ def head_output_io_projection(
 
 
 def ov_copy_strength(model, layer: int, head: int) -> float:
-    """How strongly head (layer, head)'s OV circuit copies its attended token to the output.
+    """How strongly head (layer, head)'s OV circuit copies its attended token to
+    the output.
 
     Computes W_E @ W_V[head] @ W_O[head] @ W_U and returns the mean diagonal score,
     normalised by the mean off-diagonal score. Values > 1 indicate the head copies
