@@ -18,4 +18,7 @@ def logit_diff(
         correct_ids = torch.tensor(correct_ids, device=logits.device)
     if not isinstance(incorrect_ids, torch.Tensor):
         incorrect_ids = torch.tensor(incorrect_ids, device=logits.device)
-    return logits[rows, correct_ids.to(logits.device)] - logits[rows, incorrect_ids.to(logits.device)]
+    return (
+        logits[rows, correct_ids.to(logits.device)]
+        - logits[rows, incorrect_ids.to(logits.device)]
+    )

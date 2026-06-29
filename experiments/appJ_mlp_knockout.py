@@ -1,11 +1,14 @@
 """Appendix J / Fig 19: Direct and indirect MLP effects on logit diff."""
-import os, sys, random, torch
+
+import os
+import sys
+import random
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model, clear_cache
 from metrics import logit_diff
@@ -19,7 +22,7 @@ def _bar_chart(effects: list, title: str, fname: str) -> None:
     ax.bar(range(n), effects, color=colors)
     ax.axhline(0, color="k", lw=0.8)
     ax.set_xticks(range(n))
-    ax.set_xticklabels([f"MLP{l}" for l in range(n)], rotation=45, fontsize=9)
+    ax.set_xticklabels([f"MLP{layer}" for layer in range(n)], rotation=45, fontsize=9)
     ax.set_xlabel("Layer")
     ax.set_ylabel("Change in logit diff")
     ax.set_title(title)
@@ -31,6 +34,7 @@ def _bar_chart(effects: list, title: str, fname: str) -> None:
 
 
 def run() -> tuple:
+    torch.set_grad_enabled(False)
     model = load_model()
     random.seed(1)
     np.random.seed(1)
@@ -39,16 +43,16 @@ def run() -> tuple:
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
 
-    N        = len(ioi)
-    end_pos  = ioi.word_idx["end"].long()
-    io_ids   = ioi.io_tokenIDs
-    s_ids    = ioi.s_tokenIDs
+    N = len(ioi)
+    end_pos = ioi.word_idx["end"].long()
+    io_ids = ioi.io_tokenIDs
+    s_ids = ioi.s_tokenIDs
     n_layers = len(model.transformer.h)
 
     def metric(logits: torch.Tensor) -> torch.Tensor:
         """logits: [N, seq, vocab] → per-example logit diff [N]."""
         end_logits = logits[torch.arange(N), end_pos]  # [N, vocab]
-        return logit_diff(end_logits, io_ids, s_ids)   # [N]
+        return logit_diff(end_logits, io_ids, s_ids)  # [N]
 
     # ── Baseline ─────────────────────────────────────────────────────────────
     with model.trace({"input_ids": ioi.toks.long()}):
@@ -60,7 +64,6 @@ def run() -> tuple:
 
     # ── Total effect: patch MLP_l output from ABC, everything else clean ─────
     # Indirect effect is then: total − direct (per Wang et al. 2022 Appendix J).
-    print("Computing total effects (ABC → MLP patch)…")
     total_effects = []
     for target_l in range(n_layers):
         with model.trace({"input_ids": abc.toks.long()}):
@@ -72,24 +75,20 @@ def run() -> tuple:
         total_effects.append(ld - base_ld)
         del abc_mlp_total, logits
         clear_cache()
-        print(f"  layer {target_l}: total = {total_effects[-1]:+.4f}")
 
     # ── Direct effect: path-patch MLP_l from ABC, freeze attn z + other MLPs ─
     # Cache clean attn z (separate trace from MLP saves to avoid nnsight conflicts).
-    print("Caching clean attention z…")
     clean_z: dict = {}
     with model.trace({"input_ids": ioi.toks.long()}):
-        for l in range(n_layers):
-            clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+        for layer in range(n_layers):
+            clean_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
 
     # Cache clean MLP outputs in a separate trace.
-    print("Caching clean MLP outputs…")
     clean_mlp: dict = {}
     with model.trace({"input_ids": ioi.toks.long()}):
-        for l in range(n_layers):
-            clean_mlp[l] = model.transformer.h[l].mlp.output.save()
+        for layer in range(n_layers):
+            clean_mlp[layer] = model.transformer.h[layer].mlp.output.save()
 
-    print("Computing direct effects (path patching MLP → logit)…")
     direct_effects = []
     for target_l in range(n_layers):
         # Cache target-layer MLP output on ABC.
@@ -99,19 +98,18 @@ def run() -> tuple:
         # Patch: freeze all attn head z's at clean values; swap target MLP from ABC;
         # keep all other MLP outputs at clean values → isolates direct path MLP_l → logit.
         with model.trace({"input_ids": ioi.toks.long()}):
-            for l in range(n_layers):
-                model.transformer.h[l].attn.c_proj.input[...] = clean_z[l]
-                if l == target_l:
-                    model.transformer.h[l].mlp.output[...] = abc_mlp
+            for layer in range(n_layers):
+                model.transformer.h[layer].attn.c_proj.input[...] = clean_z[layer]
+                if layer == target_l:
+                    model.transformer.h[layer].mlp.output[...] = abc_mlp
                 else:
-                    model.transformer.h[l].mlp.output[...] = clean_mlp[l]
+                    model.transformer.h[layer].mlp.output[...] = clean_mlp[layer]
             patched_logits = model.lm_head.output.save()
 
         ld = metric(patched_logits.cpu()).mean().item()
         direct_effects.append(ld - base_ld)
         del patched_logits, abc_mlp
         clear_cache()
-        print(f"  layer {target_l}: direct = {direct_effects[-1]:+.4f}")
 
     del clean_z, clean_mlp
     clear_cache()

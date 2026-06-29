@@ -8,6 +8,7 @@ y-axis : head output at END projected onto W_U[IO] − W_U[S]
 
 Heads that attend to IO and copy it should cluster in the upper-right quadrant.
 """
+
 import os
 import sys
 import random
@@ -17,15 +18,14 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model, clear_cache
 from analysis import head_output_io_projection
 from ioi_dataset import IOIDataset
 
 NM_HEADS = [(9, 9), (10, 0), (9, 6)]
-COLORS   = {(9, 9): "#1f77b4", (10, 0): "#ff7f0e", (9, 6): "#2ca02c"}
-MARKERS  = {(9, 9): "o",       (10, 0): "s",        (9, 6): "^"}
+COLORS = {(9, 9): "#1f77b4", (10, 0): "#ff7f0e", (9, 6): "#2ca02c"}
+MARKERS = {(9, 9): "o", (10, 0): "s", (9, 6): "^"}
 
 
 def get_per_example_attn(model, tokens, end_pos, io_pos, nm_heads):
@@ -52,29 +52,26 @@ def get_per_example_attn(model, tokens, end_pos, io_pos, nm_heads):
 
 
 def run():
+    torch.set_grad_enabled(False)
     model = load_model()
     random.seed(1)
     np.random.seed(1)
     ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
-    N       = len(ioi)
-    end_pos = ioi.word_idx["end"].long()   # [N]
-    io_pos  = ioi.word_idx["IO"].long()    # [N]
+    end_pos = ioi.word_idx["end"].long()
+    io_pos = ioi.word_idx["IO"].long()  # [N]
 
-    print(f"Dataset: {N} examples")
-    print("Computing per-example attention probabilities …")
     attn_per_example = get_per_example_attn(
         model, ioi.toks.long(), end_pos, io_pos, NM_HEADS
     )
 
-    print("Computing per-example IO-direction projections …")
     proj_all = head_output_io_projection(
         model, ioi.toks.long(), end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs
     )
 
     fig, ax = plt.subplots(figsize=(6, 5))
     for lh in NM_HEADS:
-        attn_vals = attn_per_example[lh].numpy()   # [N]
-        proj_vals = proj_all[lh].numpy()           # [N]
+        attn_vals = attn_per_example[lh].numpy()  # [N]
+        proj_vals = proj_all[lh].numpy()  # [N]
         ax.scatter(
             attn_vals,
             proj_vals,
@@ -106,8 +103,7 @@ def run():
         a = attn_per_example[lh]
         p = proj_all[lh]
         print(
-            f"Head {lh[0]}.{lh[1]}: "
-            f"mean_attn={a.mean():.3f}  mean_proj={p.mean():.2f}"
+            f"Head {lh[0]}.{lh[1]}: mean_attn={a.mean():.3f}  mean_proj={p.mean():.2f}"
         )
 
 

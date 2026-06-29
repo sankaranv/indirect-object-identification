@@ -1,26 +1,42 @@
 # indirect-object-identification/experiments/fig7_minimality.py
 """Figure 7: Minimality — every circuit head has score > 0 when companions are ablated."""
-import os, sys, json, random, torch
+
+import os
+import sys
+import json
+import random
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model
 from metrics import logit_diff
-from circuit import CIRCUIT, K_FOR_EACH_COMPONENT, SEQ_POS_TO_KEEP, compute_means, run_with_mean_ablation
+from circuit import (
+    CIRCUIT,
+    K_FOR_EACH_COMPONENT,
+    SEQ_POS_TO_KEEP,
+    compute_means,
+    run_with_mean_ablation,
+)
 from ioi_dataset import IOIDataset
 
 
 def ablate_heads(base_circuit, heads_to_remove):
     result = {}
     for k, heads in base_circuit.items():
-        result[k] = [(l, h) for (l, h) in heads if (l, h) not in heads_to_remove]
+        result[k] = [
+            (layer, head)
+            for (layer, head) in heads
+            if (layer, head) not in heads_to_remove
+        ]
     return result
 
 
 def run():
+    torch.set_grad_enabled(False)
     model = load_model()
     random.seed(1)
     np.random.seed(1)
@@ -28,17 +44,20 @@ def run():
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
 
-    N       = len(ioi)
+    N = len(ioi)
     end_pos = ioi.word_idx["end"]
 
     def ld(logits):
-        return logit_diff(
-            logits[torch.arange(N), end_pos],
-            ioi.io_tokenIDs,
-            ioi.s_tokenIDs,
-        ).mean().item()
+        return (
+            logit_diff(
+                logits[torch.arange(N), end_pos],
+                ioi.io_tokenIDs,
+                ioi.s_tokenIDs,
+            )
+            .mean()
+            .item()
+        )
 
-    print("Computing ABC means…")
     means = compute_means(model, abc.toks.long(), abc.groups)
 
     with model.trace({"input_ids": ioi.toks.long()}):
@@ -46,7 +65,6 @@ def run():
     full_ld = ld(full_logits.cpu())
 
     print(f"Full model LD: {full_ld:.4f}")
-    print(f"Computing minimality scores for {len(K_FOR_EACH_COMPONENT)} heads…")
 
     scores = {}
     head_to_type = {}
@@ -56,22 +74,28 @@ def run():
 
     for head, K in K_FOR_EACH_COMPONENT.items():
         # C \ K (circuit keeping head, removing companions)
-        circ_minus_K   = ablate_heads(CIRCUIT, K)
+        circ_minus_K = ablate_heads(CIRCUIT, K)
         # C \ K ∪ {head} (circuit removing companions AND head)
         circ_minus_K_v = ablate_heads(CIRCUIT, K | {head})
 
-        logits_K   = run_with_mean_ablation(model, ioi.toks.long(), means, circ_minus_K, SEQ_POS_TO_KEEP, ioi.word_idx)
-        logits_K_v = run_with_mean_ablation(model, ioi.toks.long(), means, circ_minus_K_v, SEQ_POS_TO_KEEP, ioi.word_idx)
+        logits_K = run_with_mean_ablation(
+            model, ioi.toks.long(), means, circ_minus_K, SEQ_POS_TO_KEEP, ioi.word_idx
+        )
+        logits_K_v = run_with_mean_ablation(
+            model, ioi.toks.long(), means, circ_minus_K_v, SEQ_POS_TO_KEEP, ioi.word_idx
+        )
 
         score = abs(ld(logits_K.cpu()) - ld(logits_K_v.cpu()))
         scores[head] = score
         status = "OK" if score > 0 else "FAIL"
-        print(f"  {head_to_type.get(head,'?'):25s} {head}  abs_score={score:+.4f}  {status}")
+        print(
+            f"  {head_to_type.get(head, '?'):25s} {head}  abs_score={score:+.4f}  {status}"
+        )
 
     # Plot
-    all_heads  = list(K_FOR_EACH_COMPONENT.keys())
+    all_heads = list(K_FOR_EACH_COMPONENT.keys())
     all_scores = [scores[h] for h in all_heads]
-    labels     = [f"{head_to_type.get(h,'?')[:8]}\n{h}" for h in all_heads]
+    labels = [f"{head_to_type.get(h, '?')[:8]}\n{h}" for h in all_heads]
 
     fig, ax = plt.subplots(figsize=(max(12, len(all_heads) * 0.5), 5))
     colors = ["#55A868" if s > 0 else "#C44E52" for s in all_scores]
@@ -83,14 +107,17 @@ def run():
     ax.set_title("Circuit Minimality (Figure 7)")
     plt.tight_layout()
     os.makedirs("plots/circuit", exist_ok=True)
-    plt.savefig("plots/circuit/fig7.png", dpi=150); plt.close()
+    plt.savefig("plots/circuit/fig7.png", dpi=150)
+    plt.close()
 
     os.makedirs("results/circuit", exist_ok=True)
     with open("results/circuit/minimality.json", "w") as f:
         json.dump({str(h): scores[h] for h in all_heads}, f, indent=2)
 
     failed = [h for h, s in scores.items() if s <= 0]
-    print(f"\n[Figure 7]  {len(all_heads)} heads evaluated; {len(failed)} failed minimality")
+    print(
+        f"\n[Figure 7]  {len(all_heads)} heads evaluated; {len(failed)} failed minimality"
+    )
     assert not failed, f"Minimality FAIL: {failed} have score ≤ 0"
     print("PASS")
 

@@ -4,6 +4,7 @@ Which sender heads causally affect the KEY inputs of S-Inhibition heads?
 Uses path_patch_head_to_heads with receiver_input="k"; metric is logit diff
 at the END position (final token), matching the main patching experiments.
 """
+
 import os
 import sys
 import random
@@ -14,7 +15,6 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model
 from metrics import logit_diff
@@ -25,6 +25,7 @@ SI_HEADS = [(7, 3), (7, 9), (8, 6), (8, 10)]
 
 
 def run():
+    torch.set_grad_enabled(False)
     model = load_model()
     random.seed(1)
     np.random.seed(1)
@@ -36,11 +37,12 @@ def run():
     N = len(ioi)
     end_pos = ioi.word_idx["end"].long()
 
-    metric = lambda logits: logit_diff(
-        logits[torch.arange(N), end_pos],
-        ioi.io_tokenIDs,
-        ioi.s_tokenIDs,
-    )
+    def metric(logits):
+        return logit_diff(
+            logits[torch.arange(N), end_pos],
+            ioi.io_tokenIDs,
+            ioi.s_tokenIDs,
+        )
 
     result = path_patch_head_to_heads(
         model,
@@ -51,14 +53,14 @@ def run():
         metric=metric,
     )
 
-    si_min = min(l for l, _ in SI_HEADS)
+    si_min = min(layer for layer, _ in SI_HEADS)
     scores = {k: v for k, v in result.scores.items() if k[0] < si_min}
 
     n_layers = len(model.transformer.h)
     n_heads = model.config.n_head
     arr = np.zeros((n_layers, n_heads))
-    for (l, h), v in scores.items():
-        arr[l, h] = v
+    for (layer, head), v in scores.items():
+        arr[layer, head] = v
 
     vmax = max(np.abs(arr).max(), 1e-6)
     fig, ax = plt.subplots(figsize=(8, 8))

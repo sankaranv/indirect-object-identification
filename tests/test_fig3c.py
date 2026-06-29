@@ -1,4 +1,6 @@
-import sys, os
+import sys
+import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -39,8 +41,8 @@ def test_head_output_io_projection_shape():
 
     tokens = torch.randint(0, 50, (N, seq))
     end_pos = torch.tensor([seq - 1] * N)
-    io_ids = list(range(N))          # token IDs for IO names
-    s_ids = list(range(N, 2 * N))   # token IDs for S names
+    io_ids = list(range(N))  # token IDs for IO names
+    s_ids = list(range(N, 2 * N))  # token IDs for S names
 
     result = head_output_io_projection(model, tokens, end_pos, io_ids, s_ids)
 

@@ -6,6 +6,9 @@ import torch
 
 from utils import clear_cache
 
+# Standard weight matrix names: W_E = token embedding, W_U = unembedding,
+# W_Q/K/V = attention projections, W_O = output projection
+
 
 def attention_to_positions(
     model,
@@ -21,16 +24,16 @@ def attention_to_positions(
     Returns          : {(layer, head): mean_attn_prob}
     """
     n_layers = len(model.transformer.h)
-    n_heads  = model.config.n_head
-    N        = tokens.size(0)
+    n_heads = model.config.n_head
+    batch_size = tokens.size(0)
 
     result: Dict[Tuple[int, int], float] = {}
     for layer in range(n_layers):
         with model.trace({"input_ids": tokens}, output_attentions=True):
             w = model.transformer.h[layer].attn.output[1].save()
-        # w: [N, n_heads, seq, seq]
+        # w: [batch_size, n_heads, seq, seq]
         for head in range(n_heads):
-            probs = w[torch.arange(N), head, query_positions, key_positions]
+            probs = w[torch.arange(batch_size), head, query_positions, key_positions]
             result[(layer, head)] = probs.mean().item()
         del w
         clear_cache()
@@ -52,18 +55,20 @@ def unembed_projections_at_positions(
     positions : [N] — per-example token index to read from
     """
     n_layers = len(model.transformer.h)
-    N        = tokens.size(0)
-    vocab    = model.config.vocab_size
+    batch_size = tokens.size(0)
+    vocab = model.config.vocab_size
 
-    W_U  = model.lm_head.weight.detach()   # [vocab, d_model]
-    out  = torch.zeros(n_layers, N, vocab)
+    W_U = model.lm_head.weight.detach()  # [vocab, d_model]
+    out = torch.zeros(n_layers, batch_size, vocab)
 
     for layer in range(n_layers):
         with model.trace({"input_ids": tokens}):
             resid = model.transformer.h[layer].output.save()
-        # resid: [N, seq, d_model]  — nnsight 0.7 unwraps the block output tuple
-        resid_at_pos = resid[torch.arange(N), positions, :]   # [N, d_model]
-        out[layer]   = resid_at_pos @ W_U.T
+        # resid: [batch_size, seq, d_model]  — nnsight 0.7 unwraps the block output tuple
+        resid_at_pos = resid[
+            torch.arange(batch_size), positions, :
+        ]  # [batch_size, d_model]
+        out[layer] = resid_at_pos @ W_U.T
         del resid
         clear_cache()
 
@@ -90,14 +95,14 @@ def head_output_io_projection(
     Returns         : {(layer, head): Tensor[N]} — one scalar per example
     """
     n_layers = len(model.transformer.h)
-    n_heads  = model.config.n_head
-    d_head   = model.config.n_embd // n_heads
-    N        = tokens.size(0)
+    n_heads = model.config.n_head
+    d_head = model.config.n_embd // n_heads
+    batch_size = tokens.size(0)
 
-    W_U    = model.lm_head.weight.detach().cpu().float()   # [vocab, d_model]
-    io_ids = torch.tensor(io_token_ids)
-    s_ids  = torch.tensor(s_token_ids)
-    io_dir = W_U[io_ids] - W_U[s_ids]                     # [N, d_model]
+    W_U = model.lm_head.weight.detach().cpu().float()  # [vocab, d_model]
+    io_ids_tensor = torch.tensor(io_token_ids)
+    s_ids_tensor = torch.tensor(s_token_ids)
+    io_dir = W_U[io_ids_tensor] - W_U[s_ids_tensor]  # [batch_size, d_model]
 
     result: Dict[Tuple[int, int], torch.Tensor] = {}
     for layer in range(n_layers):
@@ -105,13 +110,16 @@ def head_output_io_projection(
         W_O = model.transformer.h[layer].attn.c_proj.weight.detach().cpu().float()
         with model.trace({"input_ids": tokens}):
             z = model.transformer.h[layer].attn.c_proj.input.save()
-        # z: [N, seq, n_heads*d_head]
-        z_end = z[torch.arange(N), end_positions].cpu().float()   # [N, n_heads*d_head]
+        # z: [batch_size, seq, n_heads*d_head]
+        z_end = (
+            z[torch.arange(batch_size), end_positions].cpu().float()
+        )  # [batch_size, n_heads*d_head]
         for head in range(n_heads):
-            z_h   = z_end[:, head * d_head : (head + 1) * d_head]  # [N, d_head]
-            W_O_h = W_O[head * d_head : (head + 1) * d_head, :]    # [d_head, d_model]
-            out_h = z_h @ W_O_h                                     # [N, d_model]
-            proj  = (out_h * io_dir).sum(-1)                        # [N]
+            # z_h: head output [batch_size, d_head]; W_O_h: output projection for this head [d_head, d_model]
+            z_h = z_end[:, head * d_head : (head + 1) * d_head]  # [batch_size, d_head]
+            W_O_h = W_O[head * d_head : (head + 1) * d_head, :]  # [d_head, d_model]
+            out_h = z_h @ W_O_h  # [N, d_model]
+            proj = (out_h * io_dir).sum(-1)  # [N]
             result[(layer, head)] = proj
         del z
         clear_cache()
@@ -127,37 +135,43 @@ def ov_copy_strength(model, layer: int, head: int) -> float:
 
     Pure weight analysis — no forward pass required.
     """
-    d_model  = model.config.n_embd
-    n_heads  = model.config.n_head
-    d_head   = d_model // n_heads
+    d_model = model.config.n_embd
+    n_heads = model.config.n_head
+    d_head = d_model // n_heads
 
-    W_E = model.transformer.wte.weight.detach()              # [vocab, d_model]
+    W_E = model.transformer.wte.weight.detach()  # [vocab, d_model]
     # c_attn projects [d_model] → [3*d_model]; V slice is [2*d_model : 3*d_model]
-    W_QKV = model.transformer.h[layer].attn.c_attn.weight.detach()  # [d_model, 3*d_model]
-    W_V   = W_QKV[:, 2 * d_model + head * d_head : 2 * d_model + (head + 1) * d_head]  # [d_model, d_head]
-    W_O   = model.transformer.h[layer].attn.c_proj.weight.detach()  # [d_model, d_model]
-    W_O_h = W_O[head * d_head : (head + 1) * d_head, :]             # [d_head, d_model]
-    W_U   = model.lm_head.weight.detach()                           # [vocab, d_model]
+    W_QKV = model.transformer.h[
+        layer
+    ].attn.c_attn.weight.detach()  # [d_model, 3*d_model]
+    W_V = W_QKV[
+        :, 2 * d_model + head * d_head : 2 * d_model + (head + 1) * d_head
+    ]  # [d_model, d_head]
+    W_O = model.transformer.h[layer].attn.c_proj.weight.detach()  # [d_model, d_model]
+    W_O_h = W_O[head * d_head : (head + 1) * d_head, :]  # [d_head, d_model]
+    W_U = model.lm_head.weight.detach()  # [vocab, d_model]
 
     # OV circuit would be [vocab, vocab] — too large to materialise on MPS.
     # Compute diagonal and off-diagonal statistics without the full matrix.
     #
-    # Let A = W_E @ W_V @ W_O_h  shape [V, d_model]
-    #     B = W_U                 shape [V, d_model]
-    # OV = A @ B.T               shape [V, V]
+    # Let ov_projected_embeddings = W_E @ W_V @ W_O_h  shape [vocab_size, d_model]
+    #     unembedding              = W_U                shape [vocab_size, d_model]
+    # OV = ov_projected_embeddings @ unembedding.T      shape [vocab_size, vocab_size]
     #
-    # Diagonal mean:   mean_i (A[i] · B[i])
-    # Total sum:       (sum_i A[i]) · (sum_j B[j])   (outer-product row/col sums)
-    # Off-diag mean:   (total_sum - diag_sum) / (V*(V-1))
-    V = W_E.size(0)
-    A = (W_E @ W_V @ W_O_h).cpu().float()   # [V, d_model]  force CPU+fp32 to avoid MPS limits
-    B = W_U.cpu().float()                    # [V, d_model]
+    # Diagonal mean:   mean_i (ov_projected_embeddings[i] · unembedding[i])
+    # Total sum:       (sum_i ov_projected_embeddings[i]) · (sum_j unembedding[j])
+    # Off-diag mean:   (total_sum - diag_sum) / (vocab_size*(vocab_size-1))
+    vocab_size = W_E.size(0)
+    ov_projected_embeddings = (
+        (W_E @ W_V @ W_O_h).cpu().float()
+    )  # [vocab_size, d_model]  force CPU+fp32 to avoid MPS limits
+    unembedding = W_U.cpu().float()  # [vocab_size, d_model]
 
-    diag_per_tok = (A * B).sum(-1)           # [V]
-    diag_sum     = diag_per_tok.sum().item()
-    diag_mean    = diag_sum / V
+    diag_per_tok = (ov_projected_embeddings * unembedding).sum(-1)  # [vocab_size]
+    diag_sum = diag_per_tok.sum().item()
+    diag_mean = diag_sum / vocab_size
 
-    total_sum    = (A.sum(0) @ B.sum(0)).item()
-    off_diag_mean = (total_sum - diag_sum) / (V * (V - 1))
+    total_sum = (ov_projected_embeddings.sum(0) @ unembedding.sum(0)).item()
+    off_diag_mean = (total_sum - diag_sum) / (vocab_size * (vocab_size - 1))
 
     return diag_mean / (abs(off_diag_mean) + 1e-8)

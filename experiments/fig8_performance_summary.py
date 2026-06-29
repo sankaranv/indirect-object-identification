@@ -1,11 +1,15 @@
 """Figure 8: GPT-2 performance on IOI, ABC, and adversarial datasets."""
-import os, sys, random, torch
+
+import os
+import sys
+import random
+import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model
 from metrics import logit_diff
@@ -32,11 +36,11 @@ def build_adversarial_dataset(ioi: IOIDataset, model):
     texts = []
     for i, prompt in enumerate(ioi.ioi_prompts):
         io_name = prompt["IO"]
-        tmpl    = ADV_TEMPLATES[i % len(ADV_TEMPLATES)]
-        prefix  = tmpl.format(IO=io_name)
+        tmpl = ADV_TEMPLATES[i % len(ADV_TEMPLATES)]
+        prefix = tmpl.format(IO=io_name)
         texts.append(prefix + " " + prompt["text"])
-    enc     = model.tokenizer(texts, return_tensors="pt", padding=True)
-    toks    = enc.input_ids
+    enc = model.tokenizer(texts, return_tensors="pt", padding=True)
+    toks = enc.input_ids
     # IO name is the last real token; "to" is second-to-last → index -2 from end
     end_pos = enc.attention_mask.sum(-1) - 2
     return toks, end_pos
@@ -61,19 +65,24 @@ def _eval(model, toks, end_pos, io_ids, s_ids):
     logits = logits.cpu()
 
     # select per-example end positions
-    rows  = torch.arange(N)
-    ep    = end_pos if isinstance(end_pos, torch.Tensor) else torch.full((N,), end_pos, dtype=torch.long)
-    logits_at_end = logits[rows, ep]          # [N, vocab]
+    rows = torch.arange(N)
+    ep = (
+        end_pos
+        if isinstance(end_pos, torch.Tensor)
+        else torch.full((N,), end_pos, dtype=torch.long)
+    )
+    logits_at_end = logits[rows, ep]  # [N, vocab]
 
-    ld       = logit_diff(logits_at_end, io_ids, s_ids)     # [N]
+    ld = logit_diff(logits_at_end, io_ids, s_ids)  # [N]
     io_ids_t = torch.tensor(io_ids)
-    io_probs = logits_at_end.softmax(-1)[rows, io_ids_t]    # [N]
+    io_probs = logits_at_end.softmax(-1)[rows, io_ids_t]  # [N]
     s_over_io_rate = (ld < 0).float().mean().item()
 
     return ld.mean().item(), io_probs.mean().item(), s_over_io_rate
 
 
 def run():
+    torch.set_grad_enabled(False)
     model = load_model()
     random.seed(1)
     np.random.seed(1)
@@ -82,29 +91,41 @@ def run():
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
 
-    N       = len(ioi)
-    end_pos = ioi.word_idx["end"].long()    # per-example [N]
+    end_pos = ioi.word_idx["end"].long()  # per-example [N]
 
-    print("Evaluating IOI (clean)…")
     ioi_ld, ioi_io_prob, ioi_s_rate = _eval(
-        model, ioi.toks.long(), end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs)
+        model, ioi.toks.long(), end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs
+    )
 
-    print("Evaluating ABC (corrupted)…")
     abc_ld, abc_io_prob, abc_s_rate = _eval(
-        model, abc.toks.long(), end_pos, abc.io_tokenIDs, abc.s_tokenIDs)
+        model, abc.toks.long(), end_pos, abc.io_tokenIDs, abc.s_tokenIDs
+    )
 
-    print("Building adversarial dataset…")
     adv_toks, adv_end_pos = build_adversarial_dataset(ioi, model)
-    print(f"  adv_toks shape: {adv_toks.shape}, end_pos range [{adv_end_pos.min()}, {adv_end_pos.max()}]")
 
-    print("Evaluating adversarial…")
     adv_ld, adv_io_prob, adv_s_rate = _eval(
-        model, adv_toks, adv_end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs)
+        model, adv_toks, adv_end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs
+    )
 
     rows = [
-        {"dataset": "IOI (clean)",     "logit_diff": ioi_ld, "io_prob": ioi_io_prob, "s_over_io_rate": ioi_s_rate},
-        {"dataset": "ABC (corrupted)", "logit_diff": abc_ld, "io_prob": abc_io_prob, "s_over_io_rate": abc_s_rate},
-        {"dataset": "Adversarial",     "logit_diff": adv_ld, "io_prob": adv_io_prob, "s_over_io_rate": adv_s_rate},
+        {
+            "dataset": "IOI (clean)",
+            "logit_diff": ioi_ld,
+            "io_prob": ioi_io_prob,
+            "s_over_io_rate": ioi_s_rate,
+        },
+        {
+            "dataset": "ABC (corrupted)",
+            "logit_diff": abc_ld,
+            "io_prob": abc_io_prob,
+            "s_over_io_rate": abc_s_rate,
+        },
+        {
+            "dataset": "Adversarial",
+            "logit_diff": adv_ld,
+            "io_prob": adv_io_prob,
+            "s_over_io_rate": adv_s_rate,
+        },
     ]
     df = pd.DataFrame(rows)
 
@@ -112,16 +133,18 @@ def run():
     df.to_csv("results/adversarial/performance_summary.csv", index=False)
     print("\nResults:")
     for _, r in df.iterrows():
-        print(f"  {r['dataset']:20s}: LD={r['logit_diff']:+.3f}  IO_prob={r['io_prob']:.3f}  S_rate={r['s_over_io_rate']:.3f}")
+        print(
+            f"  {r['dataset']:20s}: LD={r['logit_diff']:+.3f}  IO_prob={r['io_prob']:.3f}  S_rate={r['s_over_io_rate']:.3f}"
+        )
 
     # ── Plot ──────────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    labels  = df["dataset"].tolist()
-    colors  = ["#4C72B0", "#DD8452", "#C44E52"]
+    labels = df["dataset"].tolist()
+    colors = ["#4C72B0", "#DD8452", "#C44E52"]
     metrics = [
-        ("logit_diff",    "Logit diff (IO − S)"),
-        ("io_prob",       "IO token probability"),
-        ("s_over_io_rate","Rate S predicted over IO"),
+        ("logit_diff", "Logit diff (IO − S)"),
+        ("io_prob", "IO token probability"),
+        ("s_over_io_rate", "Rate S predicted over IO"),
     ]
     for ax, (col, ylabel) in zip(axes, metrics):
         ax.bar(range(3), df[col].values, color=colors)

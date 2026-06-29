@@ -30,7 +30,6 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
@@ -61,8 +60,8 @@ def _gen_name_swap_dataset(ioi: IOIDataset) -> IOIDataset:
         # Use word-boundary regex + sentinel to handle names that are
         # substrings of each other (e.g. "Ann" vs "Anna").
         sentinel = "\x00IOMARK\x00"
-        text = re.sub(r'\b' + re.escape(io) + r'\b', sentinel, p["text"])
-        text = re.sub(r'\b' + re.escape(s) + r'\b', io, text)
+        text = re.sub(r"\b" + re.escape(io) + r"\b", sentinel, p["text"])
+        text = re.sub(r"\b" + re.escape(s) + r"\b", io, text)
         text = text.replace(sentinel, s)
         p2["text"] = text
         p2["IO"] = s
@@ -107,11 +106,11 @@ def build_counterfactual_datasets(ioi: IOIDataset) -> dict:
 
     return {
         ("original", "original"): orig_tok,
-        ("random",   "original"): rand_tok,
-        ("swapped",  "original"): swap_tok,
+        ("random", "original"): rand_tok,
+        ("swapped", "original"): swap_tok,
         ("original", "inverted"): inv_pos_ioi,
-        ("random",   "inverted"): inv_pos_rand,
-        ("swapped",  "inverted"): inv_pos_swap,
+        ("random", "inverted"): inv_pos_rand,
+        ("swapped", "inverted"): inv_pos_swap,
     }
 
 
@@ -122,14 +121,17 @@ def build_counterfactual_datasets(ioi: IOIDataset) -> dict:
 
 def _build_patch_layers() -> dict:
     patch_layers = {}
-    for l, h in SI_HEADS:
-        patch_layers.setdefault(l, []).append(h)
+    for layer, head in SI_HEADS:
+        patch_layers.setdefault(layer, []).append(head)
     return patch_layers
 
 
 def _patch_si_heads_logits(
-    model, clean_toks: torch.Tensor, src_toks: torch.Tensor,
-    patch_layers: dict, d_head: int,
+    model,
+    clean_toks: torch.Tensor,
+    src_toks: torch.Tensor,
+    patch_layers: dict,
+    d_head: int,
 ) -> torch.Tensor:
     """Patch SI head z-vectors from src_toks into a clean forward pass.
 
@@ -138,15 +140,17 @@ def _patch_si_heads_logits(
     # Cache z (c_proj input) from the source/counterfactual run
     src_z = {}
     with model.trace({"input_ids": src_toks}):
-        for l in patch_layers:
-            src_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+        for layer in patch_layers:
+            src_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
 
     # Run clean tokens, replacing SI-head slices with source z, save logits
     with model.trace({"input_ids": clean_toks}):
-        for l, heads in patch_layers.items():
-            for h in heads:
-                sl = slice(h * d_head, (h + 1) * d_head)
-                model.transformer.h[l].attn.c_proj.input[..., sl] = src_z[l][..., sl]
+        for layer, heads in patch_layers.items():
+            for head in heads:
+                sl = slice(head * d_head, (head + 1) * d_head)
+                model.transformer.h[layer].attn.c_proj.input[..., sl] = src_z[layer][
+                    ..., sl
+                ]
         logits = model.lm_head.output.save()
 
     return logits.cpu()
@@ -158,8 +162,11 @@ def _patch_si_heads_logits(
 
 
 def _nm_attention_before_after(
-    model, ioi: IOIDataset, patch_ds: IOIDataset,
-    patch_layers: dict, d_head: int,
+    model,
+    ioi: IOIDataset,
+    patch_ds: IOIDataset,
+    patch_layers: dict,
+    d_head: int,
 ) -> tuple:
     """Compute mean NM-head attention to IO/S1/S2 before and after SI patching.
 
@@ -167,45 +174,47 @@ def _nm_attention_before_after(
     """
     N = len(ioi)
     end_pos = ioi.word_idx["end"].long()
-    io_pos  = ioi.word_idx["IO"].long()
-    s1_pos  = ioi.word_idx["S"].long()
-    s2_pos  = ioi.word_idx["S2"].long()
+    io_pos = ioi.word_idx["IO"].long()
+    s1_pos = ioi.word_idx["S"].long()
+    s2_pos = ioi.word_idx["S2"].long()
 
     # Cache SI activations from the counterfactual dataset
     src_z = {}
     with model.trace({"input_ids": patch_ds.toks.long()}):
-        for l in patch_layers:
-            src_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+        for layer in patch_layers:
+            src_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
     clear_cache()
 
     # Before: clean IOI run, no patches — get NM attention weights
     with model.trace({"input_ids": ioi.toks.long()}, output_attentions=True):
-        w9_bef  = model.transformer.h[9].attn.output[1].save()
+        w9_bef = model.transformer.h[9].attn.output[1].save()
         w10_bef = model.transformer.h[10].attn.output[1].save()
 
     # After: clean IOI with SI patches applied — get NM attention weights
     with model.trace({"input_ids": ioi.toks.long()}, output_attentions=True):
-        for l, heads in patch_layers.items():
-            for h in heads:
-                sl = slice(h * d_head, (h + 1) * d_head)
-                model.transformer.h[l].attn.c_proj.input[..., sl] = src_z[l][..., sl]
-        w9_aft  = model.transformer.h[9].attn.output[1].save()
+        for layer, heads in patch_layers.items():
+            for head in heads:
+                sl = slice(head * d_head, (head + 1) * d_head)
+                model.transformer.h[layer].attn.c_proj.input[..., sl] = src_z[layer][
+                    ..., sl
+                ]
+        w9_aft = model.transformer.h[9].attn.output[1].save()
         w10_aft = model.transformer.h[10].attn.output[1].save()
 
     # Move to CPU for indexing
-    attn_bef = {9: w9_bef.cpu(),  10: w10_bef.cpu()}
+    attn_bef = {9: w9_bef.cpu(), 10: w10_bef.cpu()}
     attn_aft = {9: w9_aft.cpu(), 10: w10_aft.cpu()}
     idx = torch.arange(N)
     end_pos = end_pos.cpu()
-    io_pos  = io_pos.cpu()
-    s1_pos  = s1_pos.cpu()
-    s2_pos  = s2_pos.cpu()
+    io_pos = io_pos.cpu()
+    s1_pos = s1_pos.cpu()
+    s2_pos = s2_pos.cpu()
 
     def _mean(attn_dict, kpos):
         """Average attention from end_pos to kpos across all NM heads."""
         total = 0.0
-        for l, h in NM_HEADS:
-            total += attn_dict[l][idx, h, end_pos, kpos].mean().item()
+        for layer, head in NM_HEADS:
+            total += attn_dict[layer][idx, head, end_pos, kpos].mean().item()
         return total / len(NM_HEADS)
 
     before = {
@@ -222,9 +231,13 @@ def _nm_attention_before_after(
 
 
 def _plot_fig10(
-    model, ioi: IOIDataset, patch_ds: IOIDataset,
-    out_path: str, title: str,
-    patch_layers: dict, d_head: int,
+    model,
+    ioi: IOIDataset,
+    patch_ds: IOIDataset,
+    out_path: str,
+    title: str,
+    patch_layers: dict,
+    d_head: int,
 ) -> None:
     before, after = _nm_attention_before_after(
         model, ioi, patch_ds, patch_layers, d_head
@@ -233,10 +246,20 @@ def _plot_fig10(
     labels = ["IO", "S1", "S2"]
     x = np.arange(3)
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.bar(x - 0.2, [before[k] for k in labels], 0.35,
-           label="Before patching", color="#4C72B0")
-    ax.bar(x + 0.2, [after[k]  for k in labels], 0.35,
-           label="After patching",  color="#DD8452")
+    ax.bar(
+        x - 0.2,
+        [before[k] for k in labels],
+        0.35,
+        label="Before patching",
+        color="#4C72B0",
+    )
+    ax.bar(
+        x + 0.2,
+        [after[k] for k in labels],
+        0.35,
+        label="After patching",
+        color="#DD8452",
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Mean attention probability")
@@ -254,35 +277,38 @@ def _plot_fig10(
 
 
 def run() -> None:
+    torch.set_grad_enabled(False)
     model = load_model()
     random.seed(1)
     np.random.seed(1)
 
     ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
-    N       = len(ioi)
+    N = len(ioi)
     end_pos = ioi.word_idx["end"].long()
     n_heads = model.config.n_head
-    d_head  = model.config.n_embd // n_heads
+    d_head = model.config.n_embd // n_heads
 
     patch_layers = _build_patch_layers()
 
-    print("Building counterfactual datasets...")
     datasets = build_counterfactual_datasets(ioi)
 
     # -----------------------------------------------------------------------
     # Figure 9: 3×2 heatmap of logit diff after patching SI heads
     # -----------------------------------------------------------------------
-    print("Computing logit diffs (Fig 9)...")
     results_9 = {}
     for (tok_sig, pos_sig), ds in datasets.items():
         logits = _patch_si_heads_logits(
             model, ioi.toks.long(), ds.toks.long(), patch_layers, d_head
         )
-        ld = logit_diff(
-            logits[torch.arange(N), end_pos],
-            ioi.io_tokenIDs,
-            ioi.s_tokenIDs,
-        ).mean().item()
+        ld = (
+            logit_diff(
+                logits[torch.arange(N), end_pos],
+                ioi.io_tokenIDs,
+                ioi.s_tokenIDs,
+            )
+            .mean()
+            .item()
+        )
         results_9[(tok_sig, pos_sig)] = ld
         print(f"  ({tok_sig:10s}, {pos_sig:10s}):  logit_diff = {ld:+.3f}")
         clear_cache()
@@ -317,8 +343,9 @@ def run() -> None:
         for j in range(2):
             val = arr[i, j]
             color = "white" if abs(val) > 2.5 else "black"
-            ax.text(j, i, f"{val:+.2f}", ha="center", va="center",
-                    fontsize=9, color=color)
+            ax.text(
+                j, i, f"{val:+.2f}", ha="center", va="center", fontsize=9, color=color
+            )
     ax.set_title("Logit diff: SI head signal decomposition")
     plt.tight_layout()
     plt.savefig("plots/signal/fig9.png", dpi=150)
@@ -328,20 +355,24 @@ def run() -> None:
     # -----------------------------------------------------------------------
     # Figure 10: NM attention before vs after patching from two datasets
     # -----------------------------------------------------------------------
-    print("Computing NM attention (Fig 10, random-name dataset)...")
     _plot_fig10(
-        model, ioi, datasets[("random", "original")],
+        model,
+        ioi,
+        datasets[("random", "original")],
         "plots/signal/fig10_random_name.png",
         "NM attention: SI patched from random-name dataset",
-        patch_layers, d_head,
+        patch_layers,
+        d_head,
     )
 
-    print("Computing NM attention (Fig 10, IO↔S swap + inverted position)...")
     _plot_fig10(
-        model, ioi, datasets[("swapped", "inverted")],
+        model,
+        ioi,
+        datasets[("swapped", "inverted")],
         "plots/signal/fig10_io_s2_swap.png",
         "NM attention: SI patched from IO↔S + inverted-position dataset",
-        patch_layers, d_head,
+        patch_layers,
+        d_head,
     )
 
 

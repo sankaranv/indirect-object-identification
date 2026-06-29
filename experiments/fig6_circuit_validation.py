@@ -5,11 +5,15 @@ Uses IOIDataset("mixed", N=1000) so ABC means are averaged over template
 groups (examples sharing the same syntactic template) rather than per-example
 singletons, matching the method described in the paper.
 """
-import os, sys, json, torch
+
+import os
+import sys
+import json
+import torch
 import matplotlib.pyplot as plt
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model
 from metrics import logit_diff
@@ -18,23 +22,27 @@ from ioi_dataset import IOIDataset
 
 
 def run():
+    torch.set_grad_enabled(False)
     model = load_model()
 
     ioi = IOIDataset("mixed", N=1000, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
 
-    N       = len(ioi)
+    N = len(ioi)
     end_pos = ioi.word_idx["end"].long()
 
     def ld(logits):
-        return logit_diff(
-            logits[torch.arange(N), end_pos],
-            ioi.io_tokenIDs,
-            ioi.s_tokenIDs,
-        ).mean().item()
+        return (
+            logit_diff(
+                logits[torch.arange(N), end_pos],
+                ioi.io_tokenIDs,
+                ioi.s_tokenIDs,
+            )
+            .mean()
+            .item()
+        )
 
-    print(f"Computing ABC means ({N} examples, {len(abc.groups)} template groups)…")
     means = compute_means(model, abc.toks.long(), abc.groups)
 
     with model.trace({"input_ids": ioi.toks.long()}):
@@ -47,15 +55,19 @@ def run():
     faithful_ld = ld(faithful_logits.cpu())
 
     complete_logits = run_with_mean_ablation(
-        model, ioi.toks.long(), means,
-        {k: [] for k in CIRCUIT}, SEQ_POS_TO_KEEP, ioi.word_idx,
+        model,
+        ioi.toks.long(),
+        means,
+        {k: [] for k in CIRCUIT},
+        SEQ_POS_TO_KEEP,
+        ioi.word_idx,
     )
     complete_ld = ld(complete_logits.cpu())
 
     faith_ratio = faithful_ld / (full_ld + 1e-8)
     compl_ratio = complete_ld / (full_ld + 1e-8)
 
-    print(f"\n[Figure 6]")
+    print("\n[Figure 6]")
     print(f"  Full:              {full_ld:.4f}  (paper 3.56)")
     print(f"  Circuit only:      {faithful_ld:.4f}  (paper 3.10)")
     print(f"  Circuit ablated:   {complete_ld:.4f}  (expected ~0)")
@@ -75,15 +87,27 @@ def run():
         ax.text(b.get_x() + b.get_width() / 2, v + 0.05, f"{v:.2f}", ha="center")
     plt.tight_layout()
     os.makedirs("plots/circuit", exist_ok=True)
-    plt.savefig("plots/circuit/fig6.png", dpi=150); plt.close()
+    plt.savefig("plots/circuit/fig6.png", dpi=150)
+    plt.close()
 
     os.makedirs("results/circuit", exist_ok=True)
     with open("results/circuit/faithfulness.json", "w") as f:
-        json.dump({"full": full_ld, "faithful": faithful_ld, "complete": complete_ld,
-                   "faithfulness": faith_ratio, "completeness_remaining": compl_ratio}, f, indent=2)
+        json.dump(
+            {
+                "full": full_ld,
+                "faithful": faithful_ld,
+                "complete": complete_ld,
+                "faithfulness": faith_ratio,
+                "completeness_remaining": compl_ratio,
+            },
+            f,
+            indent=2,
+        )
 
     assert faith_ratio > 0.85, f"Faithfulness {faith_ratio:.1%} < 85% (paper 87%)"
-    assert abs(compl_ratio) < 0.10, f"Completeness remainder {compl_ratio:.1%} outside ±10%"
+    assert abs(compl_ratio) < 0.10, (
+        f"Completeness remainder {compl_ratio:.1%} outside ±10%"
+    )
     print("PASS")
 
 

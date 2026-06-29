@@ -1,12 +1,15 @@
 """Bar chart of logit diff when patching each SI head individually and all four together."""
-import os, sys, random, torch
+
+import os
+import sys
+import random
+import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model
 from metrics import logit_diff
@@ -22,27 +25,30 @@ def _patch_heads_output(model, clean_toks, corrupted_toks, heads):
 
     # Group heads by layer
     patch_layers = {}
-    for l, h in heads:
-        patch_layers.setdefault(l, []).append(h)
+    for layer, head in heads:
+        patch_layers.setdefault(layer, []).append(head)
 
     # Cache corrupted z per layer
     corr_z = {}
     with model.trace({"input_ids": corrupted_toks}):
-        for l in patch_layers:
-            corr_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+        for layer in patch_layers:
+            corr_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
 
     # Patch corrupted z for selected heads into clean run
     with model.trace({"input_ids": clean_toks}):
-        for l, head_list in patch_layers.items():
-            for h in head_list:
-                z_sl = slice(h * d_head, (h + 1) * d_head)
-                model.transformer.h[l].attn.c_proj.input[..., z_sl] = corr_z[l][..., z_sl]
+        for layer, head_list in patch_layers.items():
+            for head in head_list:
+                z_sl = slice(head * d_head, (head + 1) * d_head)
+                model.transformer.h[layer].attn.c_proj.input[..., z_sl] = corr_z[layer][
+                    ..., z_sl
+                ]
         logits = model.lm_head.output.save()
 
     return logits.cpu()
 
 
 def run():
+    torch.set_grad_enabled(False)
     model = load_model()
 
     random.seed(1)
@@ -55,11 +61,15 @@ def run():
     end_pos = ioi.word_idx["end"].long()
 
     def ld_per_example(logits):
-        return logit_diff(
-            logits[torch.arange(N), end_pos],
-            ioi.io_tokenIDs,
-            ioi.s_tokenIDs,
-        ).cpu().numpy()
+        return (
+            logit_diff(
+                logits[torch.arange(N), end_pos],
+                ioi.io_tokenIDs,
+                ioi.s_tokenIDs,
+            )
+            .cpu()
+            .numpy()
+        )
 
     # Baseline: clean run, no patching
     with model.trace({"input_ids": ioi.toks.long()}):
@@ -115,8 +125,12 @@ def run():
         }
         for k in labels
     ]
-    pd.DataFrame(rows).to_csv("results/s2_inhibition/si_combined_effects.csv", index=False)
-    print("Saved plots/s2_inhibition/fig4c.png and results/s2_inhibition/si_combined_effects.csv")
+    pd.DataFrame(rows).to_csv(
+        "results/s2_inhibition/si_combined_effects.csv", index=False
+    )
+    print(
+        "Saved plots/s2_inhibition/fig4c.png and results/s2_inhibition/si_combined_effects.csv"
+    )
 
 
 if __name__ == "__main__":

@@ -22,7 +22,6 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-torch.set_grad_enabled(False)
 
 from utils import clear_cache, load_model
 
@@ -37,16 +36,16 @@ def compute_all_scores(model, seq_len: int = 100, batch: int = 5) -> tuple:
     ind:  mean attn from pos i (second half) to pos i-seq_len+1
     """
     n_layers = len(model.transformer.h)
-    n_heads  = model.config.n_head
-    T        = 2 * seq_len
+    n_heads = model.config.n_head
+    T = 2 * seq_len
 
     torch.manual_seed(42)
-    half   = torch.randint(1, model.config.vocab_size, (batch, seq_len))
+    half = torch.randint(1, model.config.vocab_size, (batch, seq_len))
     tokens = torch.cat([half, half], dim=1)  # [batch, T]
 
-    dup  = {(l, h): 0.0 for l in range(n_layers) for h in range(n_heads)}
-    prev = {(l, h): 0.0 for l in range(n_layers) for h in range(n_heads)}
-    ind  = {(l, h): 0.0 for l in range(n_layers) for h in range(n_heads)}
+    dup = {(layer, head): 0.0 for layer in range(n_layers) for head in range(n_heads)}
+    prev = {(layer, head): 0.0 for layer in range(n_layers) for head in range(n_heads)}
+    ind = {(layer, head): 0.0 for layer in range(n_layers) for head in range(n_heads)}
 
     for layer in range(n_layers):
         # Trace with output_attentions=True to get per-head attention weights
@@ -86,23 +85,31 @@ def compute_all_scores(model, seq_len: int = 100, batch: int = 5) -> tuple:
 
 
 def run() -> None:
-    model    = load_model()
+    torch.set_grad_enabled(False)
+    model = load_model()
     n_layers = len(model.transformer.h)
-    n_heads  = model.config.n_head
+    n_heads = model.config.n_head
 
-    print("Computing duplicate / previous-token / induction scores …")
     dup, prev, ind = compute_all_scores(model)
 
     os.makedirs("plots/copy_scores", exist_ok=True)
 
     for scores, fname, title in [
-        (dup,  "fig18_dup.png",  "Duplicate token score (attention to first occurrence)"),
-        (prev, "fig18_prev.png", "Previous token score (mean attention from pos i to i-1)"),
-        (ind,  "fig18_ind.png",  "Induction score (attention to token after first occurrence)"),
+        (dup, "fig18_dup.png", "Duplicate token score (attention to first occurrence)"),
+        (
+            prev,
+            "fig18_prev.png",
+            "Previous token score (mean attention from pos i to i-1)",
+        ),
+        (
+            ind,
+            "fig18_ind.png",
+            "Induction score (attention to token after first occurrence)",
+        ),
     ]:
         arr = np.zeros((n_layers, n_heads))
-        for (l, h), v in scores.items():
-            arr[l, h] = v
+        for (layer, head), v in scores.items():
+            arr[layer, head] = v
 
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(arr, cmap="Blues", vmin=0)

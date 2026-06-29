@@ -9,6 +9,7 @@ produce a separate scatter plot where every point is one example:
 Heads that genuinely "back up" the Name Mover circuit should cluster in the
 upper-right quadrant: they attend to IO *and* write in the IO direction.
 """
+
 import os
 import sys
 import random
@@ -19,14 +20,13 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
-torch.set_grad_enabled(False)
 
 from utils import load_model, clear_cache
 from analysis import head_output_io_projection
 from ioi_dataset import IOIDataset
 
 BNM_HEADS = [(10, 10), (10, 2), (11, 2), (9, 7)]
-OUT_DIR   = "plots/backup"
+OUT_DIR = "plots/backup"
 
 
 def get_per_example_attn(model, tokens, end_pos, io_pos, heads):
@@ -53,21 +53,18 @@ def get_per_example_attn(model, tokens, end_pos, io_pos, heads):
 
 
 def run():
+    torch.set_grad_enabled(False)
     model = load_model()
     random.seed(1)
     np.random.seed(1)
     ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
-    N       = len(ioi)
-    end_pos = ioi.word_idx["end"].long()   # [N]
-    io_pos  = ioi.word_idx["IO"].long()    # [N]
+    end_pos = ioi.word_idx["end"].long()
+    io_pos = ioi.word_idx["IO"].long()  # [N]
 
-    print(f"Dataset: {N} examples")
-    print("Computing per-example attention probabilities …")
     attn_per_example = get_per_example_attn(
         model, ioi.toks.long(), end_pos, io_pos, BNM_HEADS
     )
 
-    print("Computing per-example IO-direction projections …")
     proj_all = head_output_io_projection(
         model, ioi.toks.long(), end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs
     )
@@ -76,8 +73,8 @@ def run():
 
     for lh in BNM_HEADS:
         layer, head = lh
-        attn_vals = attn_per_example[lh].numpy()   # [N]
-        proj_vals = proj_all[lh].numpy()            # [N]
+        attn_vals = attn_per_example[lh].numpy()  # [N]
+        proj_vals = proj_all[lh].numpy()  # [N]
 
         fig, ax = plt.subplots(figsize=(5, 4))
         ax.scatter(attn_vals, proj_vals, s=18, alpha=0.45, color="#64B5F6", zorder=3)
@@ -85,7 +82,9 @@ def run():
         ax.axvline(0, color="gray", linewidth=0.7, linestyle="--")
         ax.set_xlabel("Attention prob. to IO at END position")
         ax.set_ylabel("Head output · (W_U[IO] − W_U[S])")
-        ax.set_title(f"Backup NM Head {layer}.{head}: attention vs IO-direction projection")
+        ax.set_title(
+            f"Backup NM Head {layer}.{head}: attention vs IO-direction projection"
+        )
         plt.tight_layout()
 
         fname = os.path.join(OUT_DIR, f"fig16_{layer}.{head}.png")
