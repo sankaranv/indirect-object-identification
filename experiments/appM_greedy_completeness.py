@@ -193,8 +193,8 @@ def run():
                 K = set(rng.sample(naive_heads, size))
             # Circuit performance: naive circuit minus K
             fck = _F(model, ioi, means, _ablate_circuit(NAIVE_CIRCUIT, K), ioi.word_idx)
-            # Model performance proxy: complete circuit minus K
-            fmk = _F(model, ioi, means, _ablate_circuit(CIRCUIT, K), ioi.word_idx)
+            # Full model performance: only K heads ablated
+            fmk = _F_model_ablate_K(model, ioi, means, K)
             scatter_naive.append((fck, fmk))
 
     # ------------------------------------------------------------------
