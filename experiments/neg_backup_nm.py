@@ -1,9 +1,15 @@
 """NNM: negative-effect heads from Phase 1 CSV.
-Backup NMs: heads whose contribution to logit diff rises when primary NMs are ablated.
+Backup NMs: heads that compensate when primary NMs are ablated.
 NNM expected: (10,7), (11,10)
 BNM expected: (10,10),(10,6),(10,2),(10,1),(11,2),(9,7),(9,0),(11,9)
+
+BNM identification uses path patching in the NM-ablated model (paper Sec 3.2.4):
+NM heads are mean-ablated in every trace; each candidate sender's z is then
+corrupted from ABC. This correctly surfaces same-layer heads (9,0) and (9,7),
+which are invisible to contribution-diff because ablating NMs at layer 9 does
+not change the residual entering layer 9.
 """
-import os, sys, json, random, torch, einops
+import os, sys, json, random, torch
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -12,166 +18,140 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "ioi"))
 torch.set_grad_enabled(False)
 
-from utils import load_model
+from utils import load_model, clear_cache
+from metrics import logit_diff
+from circuit import compute_means
 from ioi_dataset import IOIDataset
 
 NM_HEADS     = [(9, 9), (10, 0), (9, 6)]
 EXPECTED_NNM = {(10, 7), (11, 10)}
-# (9,0) and (9,7) are at layer 9 alongside primary NMs (9,6),(9,9); ablating NMs does not
-# change the residual entering layer 9, so same-layer heads always show contrib_diff=0.
 EXPECTED_BNM = {(10, 10), (10, 6), (10, 2), (10, 1), (11, 2), (9, 7), (9, 0), (11, 9)}
 NM_CSV       = "results/name_movers/head_to_logits_causal_effect.csv"
 
 
-def _per_head_logit_diff_contribution(
-    model, ioi: IOIDataset, ablate=None
-) -> torch.Tensor:
-    """[n_layers, n_heads] — each head's contribution to IO-S logit diff at END.
+def _path_patch_bnm(model, ioi, abc, means, nm_heads, metric, bnm_threshold):
+    """Path patching in NM-ablated model to find backup name mover heads.
 
-    Computes head_output @ W_U projected onto the IO-S direction, averaged over examples.
-    ablate: optional list of (layer, head) pairs to zero out before their z contributes to c_proj.
-
-    nnsight does not allow saving and writing to c_proj.input at the same layer in the
-    same trace.  We therefore use a multi-pass strategy:
-
-      Pass 1 (clean):  save z for all layers -> z_clean[0..n_layers-1].
-
-      For each ablation layer al (sorted):
-        - z[al] is computed from the residual *entering* layer al, which is unaffected by
-          the ablation at al itself.  So z[al]_ablated = z_clean[al] (if al is the first
-          ablation layer) or z from a prior-ablation trace (if earlier layers were also
-          ablated), with ablated head slices then zeroed in Python.
-        - A dedicated trace (write = all prior ablations; save = al) avoids the conflict.
-        - Layers between consecutive ablation checkpoints are saved in the same trace used
-          for the earlier checkpoint (writes and saves target different layers).
-
-    This gives the correct z at every layer under the cascading ablation.
+    For each candidate sender (sl, sh):
+      - Both IOI and ABC runs have NM heads replaced by their per-example ABC means.
+      - Sender z is patched from the ABC run.
+      - BNM effect = metric(patched) - metric(nm_ablated_baseline).
+      - Negative effect → sender contributes positively in NM-ablated model → BNM.
     """
     n_layers = len(model.transformer.h)
     n_heads  = model.config.n_head
     d_head   = model.config.n_embd // n_heads
     N        = len(ioi)
-    end_pos  = ioi.word_idx["end"]
+    seq      = ioi.toks.shape[1]
 
-    W_U    = model.lm_head.weight.detach()                          # [vocab, d_model]
-    io_dir = W_U[ioi.io_tokenIDs] - W_U[ioi.s_tokenIDs]            # [N, d_model]
+    nm_by_layer = {}
+    for nl, nh in nm_heads:
+        nm_by_layer.setdefault(nl, []).append(nh)
 
-    if ablate is None:
-        # Single clean pass: one trace, no writes.
-        z_list = [None] * n_layers
-        with model.trace({"input_ids": ioi.toks.long()}):
-            for layer in range(n_layers):
-                z_list[layer] = model.transformer.h[layer].attn.c_proj.input.save()
-    else:
-        # Multi-pass ablated: never save and write at the same layer in one trace.
-        abl_by_layer: dict = {}
-        for al, ah in ablate:
-            abl_by_layer.setdefault(al, []).append(ah)
-        abl_layers = sorted(abl_by_layer)
+    nm_set = set(nm_heads)
+    ioi_toks = ioi.toks.long()
+    abc_toks = abc.toks.long()
 
-        # Pass 1: clean trace -- baseline z for all layers.
-        z_clean = [None] * n_layers
-        with model.trace({"input_ids": ioi.toks.long()}):
-            for layer in range(n_layers):
-                z_clean[layer] = model.transformer.h[layer].attn.c_proj.input.save()
+    # Cache z on clean IOI and ABC runs.
+    ioi_z = {}
+    with model.trace({"input_ids": ioi_toks}):
+        for l in range(n_layers):
+            ioi_z[l] = model.transformer.h[l].attn.c_proj.input.save()
 
-        # z_list starts as clean; layers 0..(a0-1) need no update (no upstream ablations).
-        z_list = list(z_clean)
-        # written_z: {layer -> modified tensor} injected into downstream traces.
-        written_z: dict = {}
+    abc_z = {}
+    with model.trace({"input_ids": abc_toks}):
+        for l in range(n_layers):
+            abc_z[l] = model.transformer.h[l].attn.c_proj.input.save()
 
-        for idx, al in enumerate(abl_layers):
-            # Get z at ablation layer al from the correct (prior-ablated) residual.
-            if idx == 0:
-                # First ablation layer: no prior ablations -> residual is clean.
-                z_al_pre = z_clean[al]
-            else:
-                # Prior ablations modified the residual; run a dedicated trace.
-                # Writes: all previously-applied ablations (layers != al).
-                # Save:   layer al -- NO CONFLICT (different layers).
-                with model.trace({"input_ids": ioi.toks.long()}):
-                    for wl, wz in written_z.items():
-                        model.transformer.h[wl].attn.c_proj.input[...] = wz
-                    _z_save = model.transformer.h[al].attn.c_proj.input.save()
-                z_al_pre = _z_save
+    def _build_z(sl, sh):
+        """Return per-layer z tensors: NM heads ablated, sender patched from ABC."""
+        out = {}
+        for l in range(n_layers):
+            z_h = ioi_z[l].reshape(N, seq, n_heads, d_head).clone()
+            if l in nm_by_layer:
+                for nh in nm_by_layer[l]:
+                    z_h[:, :, nh, :] = means[l, :, :, nh, :]
+            if l == sl and (sl, sh) not in nm_set:
+                abc_z_h = abc_z[sl].reshape(N, seq, n_heads, d_head)
+                z_h[:, :, sh, :] = abc_z_h[:, :, sh, :]
+            out[l] = z_h.reshape(N, seq, n_heads * d_head)
+        return out
 
-            # Apply this layer's ablation: zero out the nominated head slices.
-            z_al_mod = z_al_pre.clone()
-            for ah in abl_by_layer[al]:
-                z_al_mod[..., ah * d_head : (ah + 1) * d_head] = 0.0
-            z_list[al]    = z_al_mod
-            written_z[al] = z_al_mod   # register for downstream injection
+    # NM-ablated baseline (no sender patch).
+    baseline_z = _build_z(-1, -1)
+    with model.trace({"input_ids": ioi_toks}):
+        for l in range(n_layers):
+            model.transformer.h[l].attn.c_proj.input[...] = baseline_z[l]
+        nm_abl_logits = model.lm_head.output.save()
+    nm_abl_m = metric(nm_abl_logits.cpu())
+    del nm_abl_logits, baseline_z
+    clear_cache()
 
-            # Save z for layers between this ablation and the next checkpoint.
-            # Writes: all ablations so far (layers <= al).
-            # Saves:  layers al+1..next_al-1 (or al+1..n_layers-1 if last checkpoint).
-            # Write layers < save layers -> NO CONFLICT.
-            if idx + 1 < len(abl_layers):
-                save_range = range(al + 1, abl_layers[idx + 1])
-            else:
-                save_range = range(al + 1, n_layers)
+    effects = np.zeros((n_layers, n_heads))
+    for sl in range(n_layers):
+        for sh in range(n_heads):
+            if (sl, sh) in nm_set:
+                continue
+            patched_z = _build_z(sl, sh)
+            with model.trace({"input_ids": ioi_toks}):
+                for l in range(n_layers):
+                    model.transformer.h[l].attn.c_proj.input[...] = patched_z[l]
+                patched_logits = model.lm_head.output.save()
+            effects[sl, sh] = metric(patched_logits.cpu()) - nm_abl_m
+            del patched_logits, patched_z
+            clear_cache()
 
-            if save_range:
-                _z_saved: dict = {}
-                with model.trace({"input_ids": ioi.toks.long()}):
-                    for wl, wz in written_z.items():
-                        model.transformer.h[wl].attn.c_proj.input[...] = wz
-                    for layer in save_range:
-                        _z_saved[layer] = model.transformer.h[layer].attn.c_proj.input.save()
-                for layer in save_range:
-                    z_list[layer] = _z_saved[layer]
-
-    # Compute per-head contributions.
-    out = torch.zeros(n_layers, n_heads)
-    for layer in range(n_layers):
-        z = z_list[layer]
-        W_O   = model.transformer.h[layer].attn.c_proj.weight.detach()  # [n_heads*d_head, d_model]
-        W_O_h = W_O.view(n_heads, d_head, model.config.n_embd)
-        z_end = z[torch.arange(N), end_pos].view(N, n_heads, d_head)
-        head_out = einops.einsum(z_end, W_O_h, "n nh dh, nh dh dm -> n nh dm")
-        contribution = einops.einsum(head_out, io_dir, "n nh dm, n dm -> nh") / N
-        out[layer] = contribution.cpu()
-    return out
+    bnm = {(l, h) for l in range(n_layers) for h in range(n_heads)
+           if (l, h) not in nm_set and effects[l, h] < -bnm_threshold}
+    return bnm, effects
 
 
-def run(nnm_threshold=0.2, bnm_threshold=0.1):
+def run(nnm_threshold=0.2, bnm_threshold=0.05):
     model = load_model()
     random.seed(1)
     np.random.seed(1)
-    ioi   = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
 
+    # NNM from precomputed NM path patching CSV.
     df  = pd.read_csv(NM_CSV)
-    # Sign convention (Wang et al. 2022): patched − clean is positive for NNMs (corrupting them helps).
-    nnm = {(int(r['layer']), int(r['head'])) for _, r in df.iterrows() if r['causal_effect'] > nnm_threshold}
+    nnm = {(int(r['layer']), int(r['head'])) for _, r in df.iterrows()
+           if r['causal_effect'] > nnm_threshold}
     print(f"NNM: {sorted(nnm)}  expected {sorted(EXPECTED_NNM)}")
     print("PASS" if EXPECTED_NNM <= nnm else f"WARNING missing {EXPECTED_NNM - nnm}")
 
-    print("\nComputing per-head logit diff contributions (original)...")
-    contrib_orig = _per_head_logit_diff_contribution(model, ioi)
-    print("Computing per-head logit diff contributions (NMs ablated)...")
-    contrib_abl  = _per_head_logit_diff_contribution(model, ioi, ablate=NM_HEADS)
-    contrib_diff = contrib_abl - contrib_orig
+    # BNM via path patching in NM-ablated model.
+    print("\nBuilding IOI/ABC datasets and computing ABC means…")
+    ioi  = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+    abc  = ioi.gen_flipped_prompts(("IO", "RAND"))
+    abc  = abc.gen_flipped_prompts(("S", "RAND"))
+    means = compute_means(model, abc.toks.long(), abc.groups)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for ax, data, title in zip(
-        axes, [contrib_orig, contrib_abl, contrib_diff],
-        ["Contribution", "Contribution (NMs ablated)", "Change in contribution"],
-    ):
-        vm = max(data.abs().max().item(), 1e-6)
-        im = ax.imshow(data.numpy(), aspect="auto", cmap="RdBu", vmin=-vm, vmax=vm)
-        ax.set_xlabel("Head"); ax.set_ylabel("Layer"); ax.set_title(title)
-        plt.colorbar(im, ax=ax)
-    plt.tight_layout()
-    os.makedirs("plots/backup", exist_ok=True)
-    plt.savefig("plots/backup/neg_backup.png", dpi=150); plt.close()
+    N       = len(ioi)
+    end_pos = ioi.word_idx["end"].long()
 
-    n_layers, n_heads = contrib_diff.shape
-    nm_set = set(NM_HEADS)
-    bnm = {(l, h) for l in range(n_layers) for h in range(n_heads)
-           if (l, h) not in nm_set and contrib_diff[l, h].item() > bnm_threshold}
+    def metric(logits):
+        return logit_diff(
+            logits[torch.arange(N), end_pos],
+            ioi.io_tokenIDs, ioi.s_tokenIDs,
+        ).mean().item()
+
+    print("Running path patching in NM-ablated model…")
+    bnm, effects = _path_patch_bnm(model, ioi, abc, means, NM_HEADS, metric, bnm_threshold)
+
     print(f"\nBNM: {sorted(bnm)}  expected {sorted(EXPECTED_BNM)}")
     missing = EXPECTED_BNM - bnm
     print("PASS" if not missing else f"WARNING missing {missing}")
+
+    n_layers = effects.shape[0]
+    n_heads  = effects.shape[1]
+    fig, ax = plt.subplots(figsize=(8, 6))
+    vmax = max(np.abs(effects).max(), 1e-6)
+    im = ax.imshow(effects, aspect="auto", cmap="RdBu", vmin=-vmax, vmax=vmax)
+    ax.set_xlabel("Head"); ax.set_ylabel("Layer")
+    ax.set_title("Path patching effect in NM-ablated model\n(negative = BNM, positive = NNM-like)")
+    plt.colorbar(im, ax=ax)
+    plt.tight_layout()
+    os.makedirs("plots/backup", exist_ok=True)
+    plt.savefig("plots/backup/neg_backup.png", dpi=150); plt.close()
 
     os.makedirs("results/backup", exist_ok=True)
     with open("results/backup/all_nm_types.json", "w") as f:

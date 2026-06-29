@@ -82,7 +82,7 @@ def run():
         json.dump({"full": full_ld, "faithful": faithful_ld, "complete": complete_ld,
                    "faithfulness": faith_ratio, "completeness_remaining": compl_ratio}, f, indent=2)
 
-    assert faith_ratio > 0.80, f"Faithfulness {faith_ratio:.1%} < 80%"
+    assert faith_ratio > 0.85, f"Faithfulness {faith_ratio:.1%} < 85% (paper 87%)"
     assert abs(compl_ratio) < 0.10, f"Completeness remainder {compl_ratio:.1%} outside ±10%"
     print("PASS")
 
