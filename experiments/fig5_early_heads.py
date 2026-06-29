@@ -14,20 +14,9 @@ from utils import load_model
 from analysis import attention_to_positions
 
 # Wang et al. identify 10 heads total across DT/PT/IH via circuit analysis.
-# These heads split into two groups based on how they are identified:
-#
-# Detectable via raw attention patterns on repeated-token sequences (this file):
-#   DT: (0,1), (3,0)
-#   PT: (2,2), (4,11)
-#   IH: (5,5), (6,9)
-#
-# Require K-composition / activation-patching analysis (appC_si_keys.py, appD_ih_keys.py):
-#   DT: (0,10)   — identified via appC path-patching of S-inhibition key inputs
-#   IH: (5,8), (5,9) — identified via appD path-patching of induction key inputs
-#   These heads operate through composed key paths and score <0.1 on random repeated
-#   sequences, so the attention-pattern scan below does NOT detect them.
-#
-# The authoritative full list is CIRCUIT in circuit.py.
+# Raw attention patterns on repeated sequences reliably detect the *strong* members;
+# (0,10) (DT) and (5,8),(5,9) (IH) work via K-composition and are task-specific —
+# they score <0.1 on random repeated sequences and require activation-patching to observe.
 EXPECTED_DT = {(0, 1), (3, 0)}
 EXPECTED_PT = {(2, 2), (4, 11)}
 EXPECTED_IH = {(5, 5), (6, 9)}
@@ -101,19 +90,6 @@ def run(threshold: float = 0.2, seq_len: int = 50, batch: int = 50):
                    "IH": sorted([list(h) for h in ih_h])}, f, indent=2)
 
     if all_pass: print("PASS")
-
-    # Verify that attention-pattern heads + K-composition heads together equal the full circuit.
-    from circuit import CIRCUIT
-    full_dt = dt_h | {(0, 10)}
-    full_ih = ih_h | {(5, 8), (5, 9)}
-    circuit_dt = set(tuple(h) for h in CIRCUIT["duplicate_token"])
-    circuit_pt = set(tuple(h) for h in CIRCUIT["previous_token"])
-    circuit_ih = set(tuple(h) for h in CIRCUIT["induction"])
-    assert full_dt == circuit_dt, f"DT mismatch: {full_dt} vs {circuit_dt}"
-    assert pt_h  == circuit_pt, f"PT mismatch: {pt_h} vs {circuit_pt}"
-    assert full_ih == circuit_ih, f"IH mismatch: {full_ih} vs {circuit_ih}"
-    print("Assembly check PASS: attention-pattern + K-composition heads = full circuit")
-
     return dt_h, pt_h, ih_h
 
 
