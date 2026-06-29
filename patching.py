@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
+from metrics import Metric
 from model import clear_cache
 
 
@@ -42,7 +43,7 @@ def path_patch_head_to_logits(
     model,
     clean: torch.Tensor,
     corrupted: torch.Tensor,
-    metric: Callable[[torch.Tensor], torch.Tensor],
+    metric: Metric,
     *,
     batch_size: Optional[int] = None,
 ) -> PatchingResult:
@@ -115,7 +116,7 @@ def path_patch_head_to_heads(
     corrupted: torch.Tensor,
     receiver_heads: List[Tuple[int, int]],
     receiver_input: str,
-    metric: Callable[[torch.Tensor], torch.Tensor],
+    metric: Metric,
     *,
     batch_size: Optional[int] = None,
     sender_positions: Optional[torch.Tensor] = None,

@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import torch
 
-from metrics import logit_diff
+from metrics import kl_divergence, logit_diff
 
 
 def test_logit_diff_shape_and_value():
@@ -31,3 +31,39 @@ def test_logit_diff_requires_2d():
 
     with pytest.raises(AssertionError):
         logit_diff(torch.randn(3, 10, 50), [0, 1, 2], [3, 4, 5])
+
+
+def test_kl_divergence_shape():
+    N, V = 5, 200
+    logits = torch.randn(N, V)
+    reference = torch.randn(N, V)
+    result = kl_divergence(logits, reference)
+    assert result.shape == (N,)
+
+
+def test_kl_divergence_zero_when_identical():
+    N, V = 4, 100
+    logits = torch.randn(N, V)
+    result = kl_divergence(logits, logits)
+    assert torch.allclose(result, torch.zeros(N), atol=1e-5)
+
+
+def test_kl_divergence_nonnegative():
+    N, V = 6, 50
+    logits = torch.randn(N, V)
+    reference = torch.randn(N, V)
+    assert (kl_divergence(logits, reference) >= 0).all()
+
+
+def test_kl_divergence_requires_2d():
+    import pytest
+
+    with pytest.raises(AssertionError):
+        kl_divergence(torch.randn(3, 10, 50), torch.randn(3, 10, 50))
+
+
+def test_kl_divergence_shape_mismatch():
+    import pytest
+
+    with pytest.raises(AssertionError):
+        kl_divergence(torch.randn(3, 50), torch.randn(4, 50))
