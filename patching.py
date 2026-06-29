@@ -167,30 +167,25 @@ def path_patch_head_to_heads(
             for l in range(n_layers):
                 corr_z[l] = model.transformer.h[l].attn.c_proj.input.save()
 
-        # Step 2: Cache z + auxiliary (attn weights for "v"; ln_1 for "q"/"k") + logits.
+        # Step 2: Cache z + ln_1.output for receivers + logits.
+        # All three receiver_input modes ("q", "k", "v") use ln_1.output as auxiliary:
+        #   "q": patched Q, clean K/V  — ln1 used for Q; cln used for K/V
+        #   "k": clean Q, patched K, clean V — ln1 used for K; cln used for Q/V
+        #   "v": clean Q/K (for attn weights), patched V — ln1 used for V; cln for Q/K
+        # nnsight 0.7: saving ln_1.output in the same trace as c_proj.input for all
+        # layers triggers MissedProviderError when any post-receiver layer c_proj.input
+        # is also saved (out-of-order proxy registration).  Split into two traces.
         clean_z: Dict[int, torch.Tensor] = {}
         clean_aux: Dict[int, torch.Tensor] = {}
 
-        if receiver_input == "v":
-            with model.trace({"input_ids": clean_b}, output_attentions=True):
-                for l in range(n_layers):
-                    clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
-                for l in recv_set:
-                    # shape [N, n_heads, seq, seq] — attention probabilities
-                    clean_aux[l] = model.transformer.h[l].attn.output[1].save()
-                clean_logits = model.lm_head.output.save()
-        else:
-            # nnsight 0.7: saving ln_1.output in the same trace as c_proj.input for all
-            # layers triggers MissedProviderError when any post-receiver layer c_proj.input
-            # is also saved (out-of-order proxy registration).  Split into two traces.
-            with model.trace({"input_ids": clean_b}):
-                for l in range(n_layers):
-                    clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
-                clean_logits = model.lm_head.output.save()
-            with model.trace({"input_ids": clean_b}):
-                for l in sorted(recv_set):
-                    # shape [N, seq, d_model] — input to c_attn after layer norm
-                    clean_aux[l] = model.transformer.h[l].ln_1.output.save()
+        with model.trace({"input_ids": clean_b}):
+            for l in range(n_layers):
+                clean_z[l] = model.transformer.h[l].attn.c_proj.input.save()
+            clean_logits = model.lm_head.output.save()
+        with model.trace({"input_ids": clean_b}):
+            for l in sorted(recv_set):
+                # shape [N, seq, d_model] — input to c_attn after layer norm
+                clean_aux[l] = model.transformer.h[l].ln_1.output.save()
 
         clean_m = metric(clean_logits.cpu())
 
@@ -241,25 +236,24 @@ def path_patch_head_to_heads(
                 w   = recv_W[(rl, rh)]
                 ln1 = recv_ln1[rl].cpu().float()  # [N, seq, d_model]
 
-                if receiver_input == "v":
-                    V_h = ln1 @ w["W_V"] + w["b_V"]                             # [N, seq, d_head]
-                    attn_h = clean_aux[rl].cpu().float()[:, rh, :, :]           # [N, seq, seq]
-                    z_h = attn_h @ V_h                                           # [N, seq, d_head]
-                else:
-                    cln = clean_aux[rl].cpu().float()                            # [N, seq, d_model]
-                    if receiver_input == "q":
-                        Q_h = ln1 @ w["W_Q"] + w["b_Q"]
-                        K_h = cln @ w["W_K"] + w["b_K"]
-                        V_h = cln @ w["W_V"] + w["b_V"]
-                    else:  # "k"
-                        Q_h = cln @ w["W_Q"] + w["b_Q"]
-                        K_h = ln1 @ w["W_K"] + w["b_K"]
-                        V_h = cln @ w["W_V"] + w["b_V"]
-                    seq = ln1.size(1)
-                    scores = (Q_h @ K_h.transpose(-1, -2)) * (d_head ** -0.5)  # [N, seq, seq]
-                    causal_mask = torch.triu(torch.ones(seq, seq, dtype=torch.bool), diagonal=1)
-                    scores = scores.masked_fill(causal_mask, float("-inf"))
-                    z_h = torch.softmax(scores, dim=-1) @ V_h                   # [N, seq, d_head]
+                cln = clean_aux[rl].cpu().float()  # [N, seq, d_model] — clean ln_1
+                if receiver_input == "q":
+                    Q_h = ln1 @ w["W_Q"] + w["b_Q"]   # patched
+                    K_h = cln @ w["W_K"] + w["b_K"]   # clean
+                    V_h = cln @ w["W_V"] + w["b_V"]   # clean
+                elif receiver_input == "k":
+                    Q_h = cln @ w["W_Q"] + w["b_Q"]   # clean
+                    K_h = ln1 @ w["W_K"] + w["b_K"]   # patched
+                    V_h = cln @ w["W_V"] + w["b_V"]   # clean
+                else:  # "v": clean attention weights, patched V
+                    Q_h = cln @ w["W_Q"] + w["b_Q"]   # clean
+                    K_h = cln @ w["W_K"] + w["b_K"]   # clean
+                    V_h = ln1 @ w["W_V"] + w["b_V"]   # patched
+                seq = ln1.size(1)
+                scores = (Q_h @ K_h.transpose(-1, -2)) * (d_head ** -0.5)  # [N, seq, seq]
+                causal_mask = torch.triu(torch.ones(seq, seq, dtype=torch.bool), diagonal=1)
+                scores = scores.masked_fill(causal_mask, float("-inf"))
+                z_h = torch.softmax(scores, dim=-1) @ V_h                   # [N, seq, d_head]
 
                 # Move z_h to device/dtype of recv_z_step4 before assignment.
                 ref = recv_z_step4[rl]
