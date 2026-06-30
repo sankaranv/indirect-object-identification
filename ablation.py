@@ -62,9 +62,10 @@ def resample_ablation(
 ) -> Ablation:
     """Substitute example i's activation with a randomly resampled corrupted activation.
 
-    A fixed random permutation is applied across examples so that the substitute
-    is in-distribution but uncorrelated with the clean input. The permutation is
-    fixed at factory time for reproducibility.
+    A random permutation is applied across examples so that the substitute is
+    in-distribution but uncorrelated with the clean input. When seed is provided
+    the permutation is fixed at factory time for reproducibility; when seed is
+    None the permutation is drawn from OS entropy and will differ across runs.
     """
     n_heads = model.config.n_head
     d_head = model.config.n_embd // n_heads

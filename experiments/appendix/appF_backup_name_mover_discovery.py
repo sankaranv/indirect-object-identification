@@ -21,7 +21,7 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import N, SEED
+from config import N as N_EXAMPLES, SEED
 
 from ablation import compute_means
 from ioi_dataset import IOIDataset
@@ -42,6 +42,12 @@ def _path_patch_bnm(model, ioi, abc, means, nm_heads, metric, bnm_threshold):
       - Sender z is patched from the ABC run.
       - BNM effect = metric(patched) - metric(nm_ablated_baseline).
       - Negative effect → sender contributes positively in NM-ablated model → BNM.
+
+    `means` is the raw Tensor[n_layers, N, seq, n_heads, d_head] rather than an
+    Ablation callable because the intervention here is a mixed per-head write:
+    within one trace we ablate specific NM head slots while patching a different
+    sender head slot at the same layer. The Ablation interface ablates all heads
+    at a layer uniformly and cannot express this mixed intervention.
     """
     n_layers = len(model.transformer.h)
     n_heads = model.config.n_head
@@ -132,7 +138,7 @@ def run(nnm_threshold=0.2, bnm_threshold=0.05):
     print("PASS" if EXPECTED_NNM <= nnm else f"WARNING missing {EXPECTED_NNM - nnm}")
 
     # BNM via path patching in NM-ablated model.
-    ioi = IOIDataset("mixed", N=N, tokenizer=model.tokenizer, prepend_bos=False)
+    ioi = IOIDataset("mixed", N=N_EXAMPLES, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
     abc = abc.gen_flipped_prompts(("S1", "RAND"))
