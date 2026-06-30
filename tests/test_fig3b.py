@@ -26,7 +26,7 @@ def test_fig3b_runs(tmp_path, monkeypatch):
                     }
                 )
     os.makedirs("plots/name_movers", exist_ok=True)
-    from experiments.fig3b_causal_effect_bar import run
+    from experiments.discovery.fig3b_head_effects import run
 
     run()
     assert os.path.exists("plots/name_movers/fig3b.png")

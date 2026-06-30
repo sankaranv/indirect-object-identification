@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 def test_appE_saves_csv(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     os.makedirs("results/templates", exist_ok=True)
-    from experiments.appE_templates import run
+    from experiments.appendix.appE_templates import run
 
     run()
     import csv

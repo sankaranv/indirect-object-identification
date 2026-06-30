@@ -5,6 +5,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def test_fig4c_imports():
-    from experiments.fig4c_si_combined import run
+    from experiments.discovery.fig4c_s2_inhibition_combined import run
 
     assert callable(run)
