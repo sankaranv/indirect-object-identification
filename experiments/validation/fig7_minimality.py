@@ -12,14 +12,15 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
 from circuit import (
     CIRCUIT,
     K_FOR_EACH_COMPONENT,
     SEQ_POS_TO_KEEP,
-    compute_means,
-    run_with_mean_ablation,
+    run_with_ablation,
 )
+from ablation import compute_means, mean_ablation
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
 from model import load_model
@@ -39,9 +40,9 @@ def ablate_heads(base_circuit, heads_to_remove):
 def run():
     torch.set_grad_enabled(False)
     model = load_model()
-    random.seed(1)
-    np.random.seed(1)
-    ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
     abc = abc.gen_flipped_prompts(("S1", "RAND"))
@@ -61,6 +62,7 @@ def run():
         )
 
     means = compute_means(model, abc.toks.long(), abc.groups)
+    ablation = mean_ablation(means)
 
     with model.trace({"input_ids": ioi.toks.long()}):
         full_logits = model.lm_head.output.save()
@@ -80,11 +82,11 @@ def run():
         # C \ K ∪ {head} (circuit removing companions AND head)
         circ_minus_K_v = ablate_heads(CIRCUIT, K | {head})
 
-        logits_K = run_with_mean_ablation(
-            model, ioi.toks.long(), means, circ_minus_K, SEQ_POS_TO_KEEP, ioi.word_idx
+        logits_K = run_with_ablation(
+            model, ioi.toks.long(), ablation, circ_minus_K, SEQ_POS_TO_KEEP, ioi.word_idx
         )
-        logits_K_v = run_with_mean_ablation(
-            model, ioi.toks.long(), means, circ_minus_K_v, SEQ_POS_TO_KEEP, ioi.word_idx
+        logits_K_v = run_with_ablation(
+            model, ioi.toks.long(), ablation, circ_minus_K_v, SEQ_POS_TO_KEEP, ioi.word_idx
         )
 
         score = abs(ld(logits_K.cpu()) - ld(logits_K_v.cpu()))

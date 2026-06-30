@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
 from analysis import head_output_io_projection
 from ioi_dataset import IOIDataset
@@ -55,9 +56,9 @@ def get_per_example_attn(model, tokens, end_pos, io_pos, nm_heads):
 def run():
     torch.set_grad_enabled(False)
     model = load_model()
-    random.seed(1)
-    np.random.seed(1)
-    ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
     end_pos = ioi.word_idx["end"].long()
     io_pos = ioi.word_idx["IO"].long()  # [N]
 

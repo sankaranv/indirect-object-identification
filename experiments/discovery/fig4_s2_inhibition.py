@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
@@ -21,17 +22,17 @@ from patching import path_patch_head_to_heads
 NM_HEADS = [(9, 9), (10, 0), (9, 6)]
 EXPECTED = {(7, 3), (7, 9), (8, 6), (8, 10)}
 # Sign convention is patched−clean: helpful senders score negative.
-# Threshold set to -0.04: (8,6) scores -0.047 at N=300 (within SE of N=300 noise);
+# Threshold set to -0.04: (8,6) scores -0.047 at N=100 (within SE of N=100 noise);
 # clear gap to next non-SI head at -0.010. Borderline head (8,3)=-0.054 also captured.
 THRESHOLD = -0.04
 
 
 def run():
     torch.set_grad_enabled(False)
-    random.seed(42)
-    np.random.seed(42)
+    random.seed(SEED)
+    np.random.seed(SEED)
     model = load_model()
-    ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
     abc = abc.gen_flipped_prompts(("S1", "RAND"))

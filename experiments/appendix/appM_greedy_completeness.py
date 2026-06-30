@@ -19,8 +19,10 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
-from circuit import CIRCUIT, SEQ_POS_TO_KEEP, compute_means, run_with_mean_ablation
+from ablation import compute_means, mean_ablation
+from circuit import CIRCUIT, SEQ_POS_TO_KEEP, run_with_ablation
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
 from model import load_model
@@ -56,22 +58,22 @@ def _logit_diff(logits, N, end_pos, io_ids, s_ids):
     )
 
 
-def _circuit_faithfulness(model, ioi, means, circuit, word_idx):
-    """Circuit performance: run model with circuit mean-ablation, return LD."""
-    logits = run_with_mean_ablation(
-        model, ioi.toks.long(), means, circuit, SEQ_POS_TO_KEEP, word_idx
+def _circuit_faithfulness(model, ioi, ablation, circuit, word_idx):
+    """Circuit performance: run model with ablation, return LD."""
+    logits = run_with_ablation(
+        model, ioi.toks.long(), ablation, circuit, SEQ_POS_TO_KEEP, word_idx
     )
     N, end_pos = len(ioi), ioi.word_idx["end"]
     return _logit_diff(logits, N, end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs)
 
 
-def _model_logit_diff_ablate_heads(model, ioi, means, K):
-    """Full model logit diff with only K heads mean-ablated (no circuit restriction)."""
+def _model_logit_diff_ablate_heads(model, ioi, ablation, K):
+    """Full model logit diff with only K heads ablated (no circuit restriction)."""
     n_layers = len(model.transformer.h)
     n_heads = model.config.n_head
     d_head = model.config.n_embd // n_heads
     N, seq = ioi.toks.shape
-    # Build per-layer keep masks (True = keep clean, False = replace with mean)
+    # Build per-layer keep masks (True = keep clean, False = ablate)
     keep = {
         layer: torch.ones(N, seq, n_heads, dtype=torch.bool)
         for layer in range(n_layers)
@@ -85,7 +87,7 @@ def _model_logit_diff_ablate_heads(model, ioi, means, K):
             z = model.transformer.h[layer].attn.c_proj.input
             z_h = z.reshape(N, seq, n_heads, d_head)
             mask = keep[layer].unsqueeze(-1).to(z.device)
-            z_new = torch.where(mask, z_h, means[layer].to(z.device))
+            z_new = torch.where(mask, z_h, ablation(layer).to(z.device))
             model.transformer.h[layer].attn.c_proj.input[:] = z_new.reshape(
                 N, seq, n_heads * d_head
             )
@@ -93,7 +95,7 @@ def _model_logit_diff_ablate_heads(model, ioi, means, K):
     return _logit_diff(logits, N, end_pos, ioi.io_tokenIDs, ioi.s_tokenIDs)
 
 
-def greedy_k_sample(model, ioi, means, base_circuit, k=10, n_steps=5, seed=0):
+def greedy_k_sample(model, ioi, ablation, base_circuit, k=10, n_steps=5, seed=0):
     """Algorithm 3: greedy K sampling.
 
     At each step, sample k heads from (circuit \\ K), find which removal most
@@ -109,12 +111,12 @@ def greedy_k_sample(model, ioi, means, base_circuit, k=10, n_steps=5, seed=0):
         sample = rng.sample(available, min(k, len(available)))
         # baseline: F(C \ K)
         f_k = _circuit_faithfulness(
-            model, ioi, means, _ablate_circuit(base_circuit, K), ioi.word_idx
+            model, ioi, ablation, _ablate_circuit(base_circuit, K), ioi.word_idx
         )
         best_v, best_delta = None, -1.0
         for v in sample:
             f_kv = _circuit_faithfulness(
-                model, ioi, means, _ablate_circuit(base_circuit, K | {v}), ioi.word_idx
+                model, ioi, ablation, _ablate_circuit(base_circuit, K | {v}), ioi.word_idx
             )
             delta = abs(f_kv - f_k)
             if delta > best_delta:
@@ -127,8 +129,8 @@ def greedy_k_sample(model, ioi, means, base_circuit, k=10, n_steps=5, seed=0):
 def run():
     torch.set_grad_enabled(False)
     model = load_model()
-    random.seed(1)
-    np.random.seed(1)
+    random.seed(SEED)
+    np.random.seed(SEED)
 
     ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
@@ -138,6 +140,7 @@ def run():
     end_pos = ioi.word_idx["end"]
 
     means = compute_means(model, abc.toks.long(), abc.groups)
+    ablation = mean_ablation(means)
 
     with model.trace({"input_ids": ioi.toks.long()}):
         full_logits = model.lm_head.output.save()
@@ -151,13 +154,13 @@ def run():
     # ------------------------------------------------------------------
     greedy_runs = []
     for seed in range(10):
-        K = greedy_k_sample(model, ioi, means, CIRCUIT, k=10, n_steps=5, seed=seed)
+        K = greedy_k_sample(model, ioi, ablation, CIRCUIT, k=10, n_steps=5, seed=seed)
         # F(C\K): circuit minus K
         f_ck = _circuit_faithfulness(
-            model, ioi, means, _ablate_circuit(CIRCUIT, K), ioi.word_idx
+            model, ioi, ablation, _ablate_circuit(CIRCUIT, K), ioi.word_idx
         )
         # F(M\K): full model with only K ablated (no circuit restriction)
-        f_mk = _model_logit_diff_ablate_heads(model, ioi, means, K)
+        f_mk = _model_logit_diff_ablate_heads(model, ioi, ablation, K)
         incompleteness = abs(f_ck - f_mk)
         greedy_runs.append((K, f_ck, f_mk, incompleteness))
         print(
@@ -206,9 +209,9 @@ def run():
         for _ in range(3):
             K = set(rng.sample(all_heads, size))
             fck = _circuit_faithfulness(
-                model, ioi, means, _ablate_circuit(CIRCUIT, K), ioi.word_idx
+                model, ioi, ablation, _ablate_circuit(CIRCUIT, K), ioi.word_idx
             )
-            fmk = _model_logit_diff_ablate_heads(model, ioi, means, K)
+            fmk = _model_logit_diff_ablate_heads(model, ioi, ablation, K)
             scatter_circuit.append((fck, fmk))
 
     # Add greedy K sets to scatter
@@ -230,10 +233,10 @@ def run():
                 K = set(rng.sample(naive_heads, size))
             # Circuit performance: naive circuit minus K
             fck = _circuit_faithfulness(
-                model, ioi, means, _ablate_circuit(NAIVE_CIRCUIT, K), ioi.word_idx
+                model, ioi, ablation, _ablate_circuit(NAIVE_CIRCUIT, K), ioi.word_idx
             )
             # Full model performance: only K heads ablated
-            fmk = _model_logit_diff_ablate_heads(model, ioi, means, K)
+            fmk = _model_logit_diff_ablate_heads(model, ioi, ablation, K)
             scatter_naive.append((fck, fmk))
 
     # ------------------------------------------------------------------

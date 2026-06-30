@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
 from model import clear_cache, load_model
 
@@ -39,7 +40,7 @@ def compute_all_scores(model, seq_len: int = 100, batch: int = 5) -> tuple:
     n_heads = model.config.n_head
     T = 2 * seq_len
 
-    torch.manual_seed(42)
+    torch.manual_seed(SEED)
     half = torch.randint(1, model.config.vocab_size, (batch, seq_len))
     tokens = torch.cat([half, half], dim=1)  # [batch, T]
 

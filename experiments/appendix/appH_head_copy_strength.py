@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
 from model import clear_cache, load_model
 
@@ -61,7 +62,7 @@ def compute_copy_scores(model, seq_len: int = 50, batch: int = 10) -> dict:
     d_head = model.config.n_embd // n_heads
     T = 2 * seq_len
 
-    torch.manual_seed(42)
+    torch.manual_seed(SEED)
     half = torch.randint(1, model.config.vocab_size, (batch, seq_len))
     tokens = torch.cat([half, half], dim=1)  # [batch, T]
 

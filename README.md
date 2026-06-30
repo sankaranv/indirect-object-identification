@@ -22,15 +22,17 @@ Each experiment maps to a figure or appendix from the paper. They run independen
 
 | File / folder | Purpose |
 |---|---|
+| `config.py` | Global constants: `SEED` (used by all experiments) |
 | `ioi_dataset.py` | Dataset generation: IOI prompts, ABC counterfactuals, token indices |
 | `patching.py` | Path patching: `path_patch_head_to_logits`, `path_patch_head_to_heads` |
-| `circuit.py` | Mean ablation: `compute_means`, `run_with_mean_ablation` |
+| `circuit.py` | Circuit definition: `CIRCUIT`, `SEQ_POS_TO_KEEP`, `run_with_ablation` |
 | `analysis.py` | Attention patterns, unembed projections, IO-direction projection, OV copy strength |
-| `metrics.py` | `logit_diff` — IO minus S token logit at the END position |
+| `metrics.py` | `logit_diff`, `kl_divergence` — per-example scalar metrics |
+| `ablation.py` | `Ablation` type + `mean_ablation`, `zero_ablation`, `resample_ablation`, `counterfactual_ablation` |
 | `model.py` | `load_model` (GPT-2 small via nnsight) |
-| `experiments/discovery/` | Head identification: name movers, SI, early heads, backup NMs |
+| `experiments/discovery/` | Head identification: name movers, SI, early heads |
 | `experiments/validation/` | Circuit faithfulness, minimality, performance summary |
-| `experiments/appendix/` | Appendix figures A, C–E, F, H–K, M |
+| `experiments/appendix/` | Appendix figures A, C–F, H–K, M |
 | `tests/` | Regression tests for patching and dataset construction |
 
 ## Circuit heads (GPT-2 small)

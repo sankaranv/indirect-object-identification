@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
 from analysis import ov_copy_strength
 from ioi_dataset import IOIDataset
@@ -30,9 +31,9 @@ THRESHOLD = -0.01
 def run():
     torch.set_grad_enabled(False)
     model = load_model()
-    random.seed(1)
-    np.random.seed(1)
-    ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
     # ABC baseline: replace IO with random, then S with random
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))

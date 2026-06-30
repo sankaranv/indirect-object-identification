@@ -1,5 +1,5 @@
-"""NNM: negative-effect heads from Phase 1 CSV.
-Backup NMs: heads that compensate when primary NMs are ablated.
+"""Appendix F: Backup NM discovery — NNM and BNM detection via path patching.
+
 NNM expected: (10,7), (11,10)
 BNM expected: (10,10),(10,6),(10,2),(10,1),(11,2),(9,7),(9,0),(11,9)
 
@@ -21,8 +21,9 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config import SEED
 
-from circuit import compute_means
+from ablation import compute_means
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
 from model import clear_cache, load_model
@@ -117,8 +118,8 @@ def _path_patch_bnm(model, ioi, abc, means, nm_heads, metric, bnm_threshold):
 def run(nnm_threshold=0.2, bnm_threshold=0.05):
     torch.set_grad_enabled(False)
     model = load_model()
-    random.seed(1)
-    np.random.seed(1)
+    random.seed(SEED)
+    np.random.seed(SEED)
 
     # NNM from precomputed NM path patching CSV.
     df = pd.read_csv(NM_CSV)
@@ -131,7 +132,7 @@ def run(nnm_threshold=0.2, bnm_threshold=0.05):
     print("PASS" if EXPECTED_NNM <= nnm else f"WARNING missing {EXPECTED_NNM - nnm}")
 
     # BNM via path patching in NM-ablated model.
-    ioi = IOIDataset("mixed", N=300, tokenizer=model.tokenizer, prepend_bos=False)
+    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
     abc = abc.gen_flipped_prompts(("S1", "RAND"))

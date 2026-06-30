@@ -4,6 +4,8 @@ from typing import Dict, List, Set, Tuple
 
 import torch
 
+from ablation import Ablation
+
 CIRCUIT: Dict[str, List[Tuple[int, int]]] = {
     "name_mover": [(9, 9), (10, 0), (9, 6)],
     "backup_name_mover": [
@@ -64,47 +66,17 @@ SEQ_POS_TO_KEEP: Dict[str, str] = {
 }
 
 
-def compute_means(
-    model,
-    corrupted_toks: torch.Tensor,
-    groups: List[List[int]],
-) -> torch.Tensor:
-    """Per-template-group mean z-vectors over the corrupted (ABC) dataset.
-
-    Returns Tensor[n_layers, N, seq, n_heads, d_head].
-    means[layer, i] is the template-group mean z for example i.
-    """
-    n_layers = len(model.transformer.h)
-    n_heads = model.config.n_head
-    d_head = model.config.n_embd // n_heads
-    batch_size, seq_len = corrupted_toks.shape
-
-    means = torch.zeros(n_layers, batch_size, seq_len, n_heads, d_head)
-    # Per-template-group means capture the token-distribution shift from ABC corruption
-    # (IO/S names replaced by random names) without contaminating the mean with the
-    # original name tokens. This matches the mean-ablation methodology in
-    # Wang et al. 2022.
-    for layer in range(n_layers):
-        with model.trace({"input_ids": corrupted_toks}):
-            z = model.transformer.h[layer].attn.c_proj.input.save()
-        z_heads = z.reshape(batch_size, seq_len, n_heads, d_head)
-        for group in groups:
-            group_mean = z_heads[group].mean(0)
-            means[layer, group] = group_mean.cpu()
-    return means
-
-
-def run_with_mean_ablation(
+def run_with_ablation(
     model,
     clean_toks: torch.Tensor,
-    means: torch.Tensor,
+    ablation: Ablation,
     circuit: Dict[str, List[Tuple[int, int]]],
     seq_pos_to_keep: Dict[str, str],
     word_idx: Dict[str, torch.Tensor],
 ) -> torch.Tensor:
-    """Run model replacing z with means except circuit heads at their relevant
-    positions.
+    """Run model with non-circuit head z replaced by ablation(layer).
 
+    Circuit heads at their relevant sequence positions are kept clean.
     Returns logits [N, seq, vocab].
     """
     n_layers = len(model.transformer.h)
@@ -121,16 +93,12 @@ def run_with_mean_ablation(
         for layer, head in head_list:
             keep[layer][torch.arange(batch_size), positions, head] = True
 
-    # Non-circuit heads are replaced with their per-template-group mean activation,
-    # isolating the circuit's contribution while preserving the residual stream's
-    # statistical structure. Circuit heads at their relevant sequence positions are
-    # kept clean.
     with model.trace({"input_ids": clean_toks}):
         for layer in range(n_layers):
             z = model.transformer.h[layer].attn.c_proj.input
             z_h = z.reshape(batch_size, seq_len, n_heads, d_head)
             mask = keep[layer].unsqueeze(-1).to(z.device)
-            z_new = torch.where(mask, z_h, means[layer].to(z.device))
+            z_new = torch.where(mask, z_h, ablation(layer).to(z.device))
             model.transformer.h[layer].attn.c_proj.input[:] = z_new.reshape(
                 batch_size, seq_len, n_heads * d_head
             )

@@ -46,14 +46,12 @@ run_exp validation/fig6_circuit_validation.py
 run_exp validation/fig7_minimality.py
 run_exp validation/fig8_performance_summary.py
 
-# ── Phase 5: Backup / negative NMs  (needs NM CSV from Phase 1) ─────────────
-run_exp discovery/fig_backup_name_movers.py
-
-# ── Phase 6: Appendix experiments (all independent) ─────────────────────────
+# ── Phase 5: Appendix experiments (all independent) ─────────────────────────
 run_exp appendix/appA_signal_decomposition.py
 run_exp appendix/appC_s2_inhibition_key_signals.py
 run_exp appendix/appD_induction_key_signals.py
 run_exp appendix/appE_templates.py
+run_exp appendix/appF_backup_name_mover_discovery.py
 run_exp appendix/appF_backup_name_mover_effects.py
 run_exp appendix/appF_backup_name_mover_copying.py
 run_exp appendix/appH_head_copy_strength.py
