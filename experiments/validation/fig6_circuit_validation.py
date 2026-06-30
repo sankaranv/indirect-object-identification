@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import N as N_EXAMPLES, SEED
+from config import N as N_EXAMPLES
 
 from ablation import compute_means, mean_ablation
 from circuit import CIRCUIT, SEQ_POS_TO_KEEP, run_with_ablation
