@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import SEED
+from config import N, SEED
 
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
@@ -30,7 +30,7 @@ def run():
     random.seed(SEED)
     np.random.seed(SEED)
 
-    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
+    ioi = IOIDataset("mixed", N=N, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
     abc = abc.gen_flipped_prompts(("S1", "RAND"))

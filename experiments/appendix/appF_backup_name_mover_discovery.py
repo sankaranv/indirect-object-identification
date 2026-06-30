@@ -21,7 +21,7 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import SEED
+from config import N, SEED
 
 from ablation import compute_means
 from ioi_dataset import IOIDataset
@@ -132,7 +132,7 @@ def run(nnm_threshold=0.2, bnm_threshold=0.05):
     print("PASS" if EXPECTED_NNM <= nnm else f"WARNING missing {EXPECTED_NNM - nnm}")
 
     # BNM via path patching in NM-ablated model.
-    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
+    ioi = IOIDataset("mixed", N=N, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
     abc = abc.gen_flipped_prompts(("S1", "RAND"))

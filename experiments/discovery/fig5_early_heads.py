@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import SEED
+from config import N, SEED
 
 from analysis import attention_to_positions
 from ioi_dataset import IOIDataset
@@ -101,7 +101,7 @@ def run(
     # IOI-context scan: surfaces K-composition heads that require prior head
     # activations.
     # (0,10) attends S2→S only in the IOI context; (5,8),(5,9) attend S2→S+1 likewise.
-    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
+    ioi = IOIDataset("mixed", N=N, tokenizer=model.tokenizer, prepend_bos=False)
     dt_ioi = attention_to_positions(
         model, ioi.toks.long(), ioi.word_idx["S2"].long(), ioi.word_idx["S"].long()
     )

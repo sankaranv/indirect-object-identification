@@ -1,7 +1,7 @@
 # indirect-object-identification/experiments/fig6_circuit_validation.py
 """Figure 6: Circuit faithfulness and completeness via mean ablation.
 
-Uses IOIDataset("mixed", N=100) so ABC means are averaged over template
+Uses IOIDataset("mixed", N=N) so ABC means are averaged over template
 groups (examples sharing the same syntactic template) rather than per-example
 singletons, matching the method described in the paper.
 """
@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import SEED
+from config import N, SEED
 
 from ablation import compute_means, mean_ablation
 from circuit import CIRCUIT, SEQ_POS_TO_KEEP, run_with_ablation
@@ -27,7 +27,7 @@ def run():
     torch.set_grad_enabled(False)
     model = load_model()
 
-    ioi = IOIDataset("mixed", N=100, tokenizer=model.tokenizer, prepend_bos=False)
+    ioi = IOIDataset("mixed", N=N, tokenizer=model.tokenizer, prepend_bos=False)
     abc = ioi.gen_flipped_prompts(("IO", "RAND"))
     abc = abc.gen_flipped_prompts(("S", "RAND"))
     abc = abc.gen_flipped_prompts(("S1", "RAND"))
