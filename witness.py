@@ -97,6 +97,9 @@ def witness_pinned_ablation_scores(
             clean_logits = model.lm_head.output.save()
 
         clean_m = metric(clean_logits.cpu())
+        # Device of the saved activations (MPS on Apple Silicon, CUDA on GPU).
+        # counterfactual_ablation caches to CPU; move to model device before trace writes.
+        model_device = clean_z[0].device
 
         for suspect_layer, suspect_head in suspects:
             suspect_slice = slice(suspect_head * d_head, (suspect_head + 1) * d_head)
@@ -104,7 +107,7 @@ def witness_pinned_ablation_scores(
             # ablation(layer) returns [N, seq, n_heads, d_head]; select this head.
             cf_head_z = ablation(suspect_layer)[
                 batch_start:batch_end, :, suspect_head, :
-            ]  # [batch_n, seq, d_head]
+            ].to(model_device)  # [batch_n, seq, d_head]
 
             with model.trace({"input_ids": clean_b}):
                 # Ablate suspect at specified positions (or all positions).
