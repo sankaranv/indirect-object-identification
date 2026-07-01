@@ -31,6 +31,7 @@ import torch
 
 from ablation import counterfactual_ablation
 from metrics import Metric
+from model import clear_cache
 from patching import PatchingResult, _batches
 
 
@@ -81,9 +82,7 @@ def witness_pinned_ablation_scores(
 
     ablation = counterfactual_ablation(model, corrupted)
 
-    for batch_start, batch_end, clean_b, corr_b in _batches(
-        clean, corrupted, batch_size
-    ):
+    for batch_start, batch_end, clean_b, _ in _batches(clean, corrupted, batch_size):
         batch_n = clean_b.shape[0]
         pos_b = (
             positions[batch_start:batch_end].long() if positions is not None else None
@@ -141,10 +140,10 @@ def witness_pinned_ablation_scores(
                 (patched_m - clean_m).mean().item()
             )
             del patched_logits
-            torch.cuda.empty_cache()
+            clear_cache()
 
         del clean_z, clean_logits
-        torch.cuda.empty_cache()
+        clear_cache()
 
     scores = {k: sum(v) / len(v) for k, v in batch_effects.items()}
     return PatchingResult(scores=scores, n_layers=n_layers, n_heads=n_heads)
@@ -182,8 +181,14 @@ def witness_importance_scores(
     )
     baseline_score = baseline_result.scores[suspect_head]
 
+    # Exclude the suspect itself from the candidate list. If it were included,
+    # the inner trace would first write CF to the suspect's slice (ablation) and
+    # then immediately overwrite it with clean z (witness pin), silently undoing
+    # the ablation and producing importance ≈ 0 for the suspect head.
+    candidates = [c for c in candidate_witnesses if c != suspect_head]
+
     importance: Dict[Tuple[int, int], float] = {}
-    for candidate in candidate_witnesses:
+    for candidate in candidates:
         pinned_result = witness_pinned_ablation_scores(
             model,
             clean,
@@ -231,9 +236,7 @@ def pie_denoising_scores(
         (layer, head): [] for layer in range(n_layers) for head in range(n_heads)
     }
 
-    for batch_start, batch_end, clean_b, corr_b in _batches(
-        clean, corrupted, batch_size
-    ):
+    for _, _, clean_b, corr_b in _batches(clean, corrupted, batch_size):
         # Cache corrupted z (the reference world) and clean z (restoration source).
         corrupted_z: Dict[int, torch.Tensor] = {}
         with model.trace({"input_ids": corr_b}):
@@ -272,10 +275,10 @@ def pie_denoising_scores(
                     (patched_m - corrupted_m).mean().item()
                 )
                 del patched_logits
-                torch.cuda.empty_cache()
+                clear_cache()
 
         del corrupted_z, clean_z, corrupted_logits
-        torch.cuda.empty_cache()
+        clear_cache()
 
     scores = {k: sum(v) / len(v) for k, v in batch_effects.items()}
     return PatchingResult(scores=scores, n_layers=n_layers, n_heads=n_heads)

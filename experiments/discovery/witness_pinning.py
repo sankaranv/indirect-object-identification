@@ -63,7 +63,7 @@ from witness import (
 )
 
 
-PRIMARY_NAME_MOVERS = CIRCUIT["name_mover"]  # (9,9),(10,0),(9,6)
+PRIMARY_NAME_MOVERS = set(CIRCUIT["name_mover"])  # (9,9),(10,0),(9,6)
 BACKUP_NAME_MOVERS = set(CIRCUIT["backup_name_mover"])
 
 
@@ -91,7 +91,7 @@ def _end_metric(ioi, n):
     return metric
 
 
-def _load_path_patch_scores(n_layers, n_heads):
+def _load_path_patch_scores():
     """Load pre-computed path-patching scores from the fig3 experiment results."""
     path = os.path.join(
         os.path.dirname(__file__),
@@ -115,6 +115,7 @@ def _print_head_table(title, nie_scores, pinned_scores, pie_scores, path_scores)
     heads_of_interest = list(PRIMARY_NAME_MOVERS) + sorted(BACKUP_NAME_MOVERS)
     print(f"\n{'=' * 70}")
     print(f"  {title}")
+    print("  (NIE/Pinned/PathPatch: neg=helpful; PIE: pos=helpful)")
     print(f"{'=' * 70}")
     print(
         f"  {'Head':<10} {'NIE':>10} {'Pinned':>10} {'PIE':>10} {'PathPatch':>10}  Role"
@@ -159,6 +160,10 @@ def _print_dn_crosscheck(pie_scores, importance, k_values=(4, 8, 12)):
       - Near-zero PIE recall → backups are preemption (dormant clean activations),
         and Dn fails on precisely the heads Wang et al. found.
     Witness importance recall is shown alongside for direct comparison.
+
+    Scope note: PIE ranks heads globally (all 144); importance ranks all 144 from
+    the suspect's perspective — comparable only if backup heads rank high regardless
+    of which primary is chosen.
     """
     # PIE: positive scores mean the head's clean activation restores metric in
     # corrupted context. Higher = more task signal in clean pass.
@@ -237,7 +242,7 @@ def run():
         metric,
     )
 
-    path_scores = _load_path_patch_scores(n_layers, n_heads)
+    path_scores = _load_path_patch_scores()
 
     _print_head_table(
         "Necessity scores — primary and backup name movers",
