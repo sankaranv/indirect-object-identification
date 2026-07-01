@@ -82,6 +82,13 @@ def witness_pinned_ablation_scores(
 
     ablation = counterfactual_ablation(model, corrupted)
 
+    # Index witnesses by layer so the trace can write in ascending order.
+    # nnsight 0.7 requires all interventions on c_proj.input to be registered
+    # in ascending layer order within a single trace call.
+    witness_heads_by_layer: Dict[int, List[int]] = {}
+    for wl, wh in witness_heads:
+        witness_heads_by_layer.setdefault(wl, []).append(wh)
+
     for batch_start, batch_end, clean_b, _ in _batches(clean, corrupted, batch_size):
         batch_n = clean_b.shape[0]
         pos_b = (
@@ -110,32 +117,32 @@ def witness_pinned_ablation_scores(
             ].to(model_device)  # [batch_n, seq, d_head]
 
             with model.trace({"input_ids": clean_b}):
-                # Ablate suspect at specified positions (or all positions).
-                if pos_b is None:
-                    model.transformer.h[suspect_layer].attn.c_proj.input[
-                        ..., suspect_slice
-                    ] = cf_head_z
-                else:
-                    # Precompute replacement: clean z everywhere, CF at pos_b.
-                    # This is the safe pattern for position-restricted writes in
-                    # nnsight — we cannot do indexed writes to proxy tensors, so
-                    # we build the full replacement tensor outside the trace.
-                    repl = clean_z[suspect_layer].clone()
-                    batch_idx = torch.arange(batch_n)
-                    repl[batch_idx, pos_b, suspect_slice] = cf_head_z[batch_idx, pos_b]
-                    model.transformer.h[suspect_layer].attn.c_proj.input[...] = repl
-
-                # Pin each witness at its factual (clean) activation at all
-                # positions. This prevents the witness from recomputing in
-                # response to the suspect's modified residual stream.
-                for witness_layer, witness_head in witness_heads:
-                    witness_slice = slice(
-                        witness_head * d_head, (witness_head + 1) * d_head
-                    )
-                    model.transformer.h[witness_layer].attn.c_proj.input[
-                        ..., witness_slice
-                    ] = clean_z[witness_layer][..., witness_slice]
-
+                # All writes in ascending layer order (nnsight 0.7 requirement).
+                for layer in range(n_layers):
+                    if layer == suspect_layer:
+                        if pos_b is None:
+                            # Write suspect slice; witnesses at this layer are
+                            # handled by the witness pin loop below.
+                            model.transformer.h[layer].attn.c_proj.input[
+                                ..., suspect_slice
+                            ] = cf_head_z
+                        else:
+                            # Full replacement: clean z for all heads, CF for
+                            # the suspect at pos_b. Witnesses at this layer are
+                            # automatically at clean values (repl starts as
+                            # clean_z, modified only at suspect_slice/pos_b).
+                            repl = clean_z[layer].clone()
+                            batch_idx = torch.arange(batch_n)
+                            repl[batch_idx, pos_b, suspect_slice] = cf_head_z[
+                                batch_idx, pos_b
+                            ]
+                            model.transformer.h[layer].attn.c_proj.input[...] = repl
+                    # Pin witnesses at this layer to their factual (clean) activations.
+                    for wh in witness_heads_by_layer.get(layer, []):
+                        wslice = slice(wh * d_head, (wh + 1) * d_head)
+                        model.transformer.h[layer].attn.c_proj.input[..., wslice] = (
+                            clean_z[layer][..., wslice]
+                        )
                 patched_logits = model.lm_head.output.save()
 
             patched_m = metric(patched_logits.cpu())
