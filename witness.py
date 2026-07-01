@@ -210,11 +210,72 @@ def pie_denoising_scores(
     *,
     batch_size: Optional[int] = None,
 ) -> PatchingResult:
-    """Score each head by its ability to restore task performance from a corrupted run.
+    """Score each head by how much restoring it alone improves a corrupted run.
 
-    In a fully corrupted (ABC) run, restores one head at a time to its clean
-    activation while pinning all other heads at corrupted values. Finds heads
-    whose clean activation can single-handedly restore task performance in the
-    absence of intact primary circuit components.
+    For each head h: runs the model on the corrupted input, replaces h's z-slice
+    with its clean-run value, and freezes all other heads at their corrupted values.
+    Score = patched_metric − corrupted_metric (positive for heads that help).
+
+    This is path patching with clean and corrupted swapped. It identifies
+    heads whose clean activation carries recoverable task information even when
+    the rest of the circuit is disrupted (PIE / ADDER-gate denoising).
+
+    Limitation: finds overdetermination backup heads (active in clean pass) but
+    not preemption backups (dormant in clean pass, Δz ≈ 0).
     """
-    raise NotImplementedError("pie_denoising_scores is implemented in Task 3")
+    n_layers = len(model.transformer.h)
+    n_heads = model.config.n_head
+    d_head = model.config.n_embd // n_heads
+
+    batch_effects: Dict[Tuple[int, int], List[float]] = {
+        (layer, head): [] for layer in range(n_layers) for head in range(n_heads)
+    }
+
+    for batch_start, batch_end, clean_b, corr_b in _batches(
+        clean, corrupted, batch_size
+    ):
+        # Cache corrupted z (the reference world) and clean z (restoration source).
+        corrupted_z: Dict[int, torch.Tensor] = {}
+        with model.trace({"input_ids": corr_b}):
+            for layer in range(n_layers):
+                corrupted_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
+            corrupted_logits = model.lm_head.output.save()
+
+        clean_z: Dict[int, torch.Tensor] = {}
+        with model.trace({"input_ids": clean_b}):
+            for layer in range(n_layers):
+                clean_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
+
+        corrupted_m = metric(corrupted_logits.cpu())
+
+        for restore_layer in range(n_layers):
+            for restore_head in range(n_heads):
+                restore_slice = slice(
+                    restore_head * d_head, (restore_head + 1) * d_head
+                )
+                with model.trace({"input_ids": corr_b}):
+                    for layer in range(n_layers):
+                        if layer == restore_layer:
+                            # Restore this head to its clean activation; keep all
+                            # other heads at their corrupted activations.
+                            model.transformer.h[layer].attn.c_proj.input[
+                                ..., restore_slice
+                            ] = clean_z[restore_layer][..., restore_slice]
+                        else:
+                            model.transformer.h[layer].attn.c_proj.input[...] = (
+                                corrupted_z[layer]
+                            )
+                    patched_logits = model.lm_head.output.save()
+
+                patched_m = metric(patched_logits.cpu())
+                batch_effects[(restore_layer, restore_head)].append(
+                    (patched_m - corrupted_m).mean().item()
+                )
+                del patched_logits
+                torch.cuda.empty_cache()
+
+        del corrupted_z, clean_z, corrupted_logits
+        torch.cuda.empty_cache()
+
+    scores = {k: sum(v) / len(v) for k, v in batch_effects.items()}
+    return PatchingResult(scores=scores, n_layers=n_layers, n_heads=n_heads)

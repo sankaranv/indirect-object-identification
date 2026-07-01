@@ -45,3 +45,15 @@ def test_witness_importance_scores_signature():
     assert "suspect_head" in params
     assert "candidate_witnesses" in params
     assert "positions" in params
+
+
+def test_pie_denoising_scores_signature():
+    from witness import pie_denoising_scores
+
+    import inspect
+
+    sig = inspect.signature(pie_denoising_scores)
+    params = list(sig.parameters)
+    assert "clean" in params
+    assert "corrupted" in params
+    assert "batch_size" in params
