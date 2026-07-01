@@ -33,3 +33,15 @@ def test_patching_result_reused():
 
     src = inspect.getsource(witness_pinned_ablation_scores)
     assert "PatchingResult" in src
+
+
+def test_witness_importance_scores_signature():
+    from witness import witness_importance_scores
+
+    import inspect
+
+    sig = inspect.signature(witness_importance_scores)
+    params = list(sig.parameters)
+    assert "suspect_head" in params
+    assert "candidate_witnesses" in params
+    assert "positions" in params

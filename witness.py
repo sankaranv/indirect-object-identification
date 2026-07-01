@@ -169,7 +169,37 @@ def witness_importance_scores(
     High importance identifies heads that compensate when the suspect is absent.
     The baseline (no witnesses pinned) is computed once and reused.
     """
-    raise NotImplementedError("witness_importance_scores is implemented in Task 2")
+    # Baseline: suspect ablated, no witnesses — backup compensates freely.
+    baseline_result = witness_pinned_ablation_scores(
+        model,
+        clean,
+        corrupted,
+        metric,
+        witness_heads=[],
+        suspect_heads=[suspect_head],
+        positions=positions,
+        batch_size=batch_size,
+    )
+    baseline_score = baseline_result.scores[suspect_head]
+
+    importance: Dict[Tuple[int, int], float] = {}
+    for candidate in candidate_witnesses:
+        pinned_result = witness_pinned_ablation_scores(
+            model,
+            clean,
+            corrupted,
+            metric,
+            witness_heads=[candidate],
+            suspect_heads=[suspect_head],
+            positions=positions,
+            batch_size=batch_size,
+        )
+        pinned_score = pinned_result.scores[suspect_head]
+        # Both scores are negative for helpful suspect heads. A more negative
+        # pinned_score means the suspect looks more necessary when w is pinned.
+        importance[candidate] = abs(pinned_score) - abs(baseline_score)
+
+    return importance
 
 
 def pie_denoising_scores(
