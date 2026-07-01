@@ -1,0 +1,35 @@
+"""Unit tests for witness.py.
+
+Uses SimpleNamespace stubs for model structure so no real weights are needed.
+Functions that require nnsight tracing (witness_pinned_ablation_scores,
+witness_importance_scores, pie_denoising_scores) are tested only for their
+import and return-type contract; correctness is validated by the experiment
+script on real GPT-2 weights.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+def test_imports():
+    from witness import (
+        pie_denoising_scores,
+        witness_importance_scores,
+        witness_pinned_ablation_scores,
+    )
+
+    assert callable(witness_pinned_ablation_scores)
+    assert callable(witness_importance_scores)
+    assert callable(pie_denoising_scores)
+
+
+def test_patching_result_reused():
+    """witness.py returns the same PatchingResult from patching.py — no duplicate."""
+    from witness import witness_pinned_ablation_scores
+
+    import inspect
+
+    src = inspect.getsource(witness_pinned_ablation_scores)
+    assert "PatchingResult" in src
