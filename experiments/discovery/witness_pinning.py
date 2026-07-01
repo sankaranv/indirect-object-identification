@@ -52,7 +52,8 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from circuit import CIRCUIT
-from config import N as N_EXAMPLES, SEED
+from config import SEED
+from config import N as N_EXAMPLES
 from ioi_dataset import IOIDataset
 from metrics import logit_diff
 from model import load_model
@@ -62,9 +63,10 @@ from witness import (
     witness_pinned_ablation_scores,
 )
 
-
 PRIMARY_NAME_MOVERS = set(CIRCUIT["name_mover"])  # (9,9),(10,0),(9,6)
 BACKUP_NAME_MOVERS = set(CIRCUIT["backup_name_mover"])
+# Non-circuit heads used as negative controls: Pinned≈NIE expected, importance≈0.
+CONTROL_HEADS = [(2, 0), (11, 0)]
 
 
 def _build_dataset(tokenizer):
@@ -112,7 +114,9 @@ def _load_path_patch_scores():
 
 
 def _print_head_table(title, nie_scores, pinned_scores, pie_scores, path_scores):
-    heads_of_interest = list(PRIMARY_NAME_MOVERS) + sorted(BACKUP_NAME_MOVERS)
+    heads_of_interest = (
+        list(PRIMARY_NAME_MOVERS) + sorted(BACKUP_NAME_MOVERS) + list(CONTROL_HEADS)
+    )
     print(f"\n{'=' * 70}")
     print(f"  {title}")
     print("  (NIE/Pinned/PathPatch: neg=helpful; PIE: pos=helpful)")
@@ -122,7 +126,12 @@ def _print_head_table(title, nie_scores, pinned_scores, pie_scores, path_scores)
     )
     print(f"  {'-' * 64}")
     for head in heads_of_interest:
-        role = "primary" if head in PRIMARY_NAME_MOVERS else "backup"
+        if head in PRIMARY_NAME_MOVERS:
+            role = "primary"
+        elif head in BACKUP_NAME_MOVERS:
+            role = "backup"
+        else:
+            role = "control"
         nie = nie_scores.get(head, float("nan"))
         pinned = pinned_scores.get(head, float("nan"))
         pie = pie_scores.get(head, float("nan"))
@@ -133,10 +142,10 @@ def _print_head_table(title, nie_scores, pinned_scores, pie_scores, path_scores)
         )
 
 
-def _print_importance_table(importance, k_values=(4, 8, 12)):
+def _print_importance_table(suspect, importance, k_values=(4, 8, 12)):
     ranked = sorted(importance, key=lambda h: importance[h], reverse=True)
     print(f"\n{'=' * 70}")
-    print("  Witness importance ranking for suspect (9, 9)")
+    print(f"  Witness importance ranking for suspect {suspect}")
     print("  (importance = |pinned_score| - |baseline_score|, higher is more)")
     print(f"{'=' * 70}")
     print(f"  {'Rank':<6} {'Head':<10} {'Importance':>12}  Backup?")
@@ -252,31 +261,48 @@ def run():
         path_scores,
     )
 
-    # --- Comparison 2: witness importance ranking for primary (9,9) ----------
-
-    print("\nRunning witness importance scan for suspect (9, 9)...")
-    # Scan all heads as candidate witnesses (144 heads in GPT-2 small).
-    all_heads = [(layer, head) for layer in range(n_layers) for head in range(n_heads)]
-    importance = witness_importance_scores(
+    # --- (9,6) all-positions diagnostic ---
+    # (9,6) showed a sign-inverted NIE when ablated only at end_pos.
+    # Run with positions=None (all positions ablated) to check if the sign flips.
+    print("\nRunning (9,6) all-positions NIE (sign-inversion diagnostic)...")
+    nie_full_96 = witness_pinned_ablation_scores(
         model,
         clean_toks,
         corrupted_toks,
         metric,
-        suspect_head=(9, 9),
-        candidate_witnesses=all_heads,
-        positions=end_pos,
+        witness_heads=[],
+        positions=None,
+        suspect_heads=[(9, 6)],
     )
+    nie_end_96 = nie_result.scores.get((9, 6), float("nan"))
+    nie_all_96 = nie_full_96.scores[(9, 6)]
+    pinned_end_96 = pinned_result.scores.get((9, 6), float("nan"))
+    print("\n  (9,6) position ablation comparison:")
+    print(f"    NIE end_pos only:  {nie_end_96:+.4f}")
+    print(f"    NIE all positions: {nie_all_96:+.4f}")
+    print(f"    Pinned end_pos:    {pinned_end_96:+.4f}")
 
-    _print_importance_table(importance)
+    # --- Comparison 2: witness importance for all three primaries + control ---
+
+    all_heads = [(layer, head) for layer in range(n_layers) for head in range(n_heads)]
+    importance_by_suspect = {}
+    for suspect in list(PRIMARY_NAME_MOVERS) + [(11, 0)]:
+        role = "primary" if suspect in PRIMARY_NAME_MOVERS else "negative control"
+        print(f"\nRunning witness importance scan for suspect {suspect} ({role})...")
+        importance_by_suspect[suspect] = witness_importance_scores(
+            model,
+            clean_toks,
+            corrupted_toks,
+            metric,
+            suspect_head=suspect,
+            candidate_witnesses=all_heads,
+            positions=end_pos,
+        )
+        _print_importance_table(suspect, importance_by_suspect[suspect])
 
     # --- Comparison 3 & 4: Dn cross-check and preemption classification ---
-    # pie_result already computed above; importance is for suspect (9,9) only.
-    # For the cross-check we use all-head PIE scores vs. all-head importance.
-    # importance only covers (9,9) as suspect; for the full cross-check we need
-    # PIE scores for all heads (already in pie_result) and importance for all
-    # suspects. For the PoC we use (9,9) as the representative primary —
-    # the backup heads should appear regardless of which primary we choose.
-    _print_dn_crosscheck(pie_result.scores, importance)
+    # Use (9,9) as representative primary — strongest NIE→Pinned signal.
+    _print_dn_crosscheck(pie_result.scores, importance_by_suspect[(9, 9)])
 
 
 if __name__ == "__main__":

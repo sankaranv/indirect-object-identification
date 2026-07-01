@@ -25,10 +25,7 @@ Three estimands, each differing in which downstream nodes are pinned:
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
-
 import torch
-
 from ablation import counterfactual_ablation
 from metrics import Metric
 from model import clear_cache
@@ -40,11 +37,11 @@ def witness_pinned_ablation_scores(
     clean: torch.Tensor,
     corrupted: torch.Tensor,
     metric: Metric,
-    witness_heads: List[Tuple[int, int]],
+    witness_heads: list[tuple[int, int]],
     *,
-    suspect_heads: Optional[List[Tuple[int, int]]] = None,
-    positions: Optional[torch.Tensor] = None,
-    batch_size: Optional[int] = None,
+    suspect_heads: list[tuple[int, int]] | None = None,
+    positions: torch.Tensor | None = None,
+    batch_size: int | None = None,
 ) -> PatchingResult:
     """Score each suspect head's necessity under counterfactual ablation with pinned witnesses.
 
@@ -78,14 +75,14 @@ def witness_pinned_ablation_scores(
         else [(layer, head) for layer in range(n_layers) for head in range(n_heads)]
     )
 
-    batch_effects: Dict[Tuple[int, int], List[float]] = {s: [] for s in suspects}
+    batch_effects: dict[tuple[int, int], list[float]] = {s: [] for s in suspects}
 
     ablation = counterfactual_ablation(model, corrupted)
 
     # Index witnesses by layer so the trace can write in ascending order.
     # nnsight 0.7 requires all interventions on c_proj.input to be registered
     # in ascending layer order within a single trace call.
-    witness_heads_by_layer: Dict[int, List[int]] = {}
+    witness_heads_by_layer: dict[int, list[int]] = {}
     for wl, wh in witness_heads:
         witness_heads_by_layer.setdefault(wl, []).append(wh)
 
@@ -97,7 +94,7 @@ def witness_pinned_ablation_scores(
 
         # Cache clean z for witness pinning — factual activations the witnesses
         # would have produced if the suspect had not been touched.
-        clean_z: Dict[int, torch.Tensor] = {}
+        clean_z: dict[int, torch.Tensor] = {}
         with model.trace({"input_ids": clean_b}):
             for layer in range(n_layers):
                 clean_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
@@ -121,22 +118,18 @@ def witness_pinned_ablation_scores(
                 for layer in range(n_layers):
                     if layer == suspect_layer:
                         if pos_b is None:
-                            # Write suspect slice; witnesses at this layer are
-                            # handled by the witness pin loop below.
-                            model.transformer.h[layer].attn.c_proj.input[
-                                ..., suspect_slice
-                            ] = cf_head_z
+                            suspect_z = cf_head_z
                         else:
-                            # Full replacement: clean z for all heads, CF for
-                            # the suspect at pos_b. Witnesses at this layer are
-                            # automatically at clean values (repl starts as
-                            # clean_z, modified only at suspect_slice/pos_b).
-                            repl = clean_z[layer].clone()
+                            # CF only at end_pos; factual (clean) z at all other
+                            # positions for this head. Slice write leaves sibling
+                            # heads at suspect_layer live — they recompute from the
+                            # clean residual stream.
+                            suspect_z = clean_z[layer][..., suspect_slice].clone()
                             batch_idx = torch.arange(batch_n)
-                            repl[batch_idx, pos_b, suspect_slice] = cf_head_z[
-                                batch_idx, pos_b
-                            ]
-                            model.transformer.h[layer].attn.c_proj.input[...] = repl
+                            suspect_z[batch_idx, pos_b] = cf_head_z[batch_idx, pos_b]
+                        model.transformer.h[layer].attn.c_proj.input[
+                            ..., suspect_slice
+                        ] = suspect_z
                     # Pin witnesses at this layer to their factual (clean) activations.
                     for wh in witness_heads_by_layer.get(layer, []):
                         wslice = slice(wh * d_head, (wh + 1) * d_head)
@@ -164,12 +157,12 @@ def witness_importance_scores(
     clean: torch.Tensor,
     corrupted: torch.Tensor,
     metric: Metric,
-    suspect_head: Tuple[int, int],
-    candidate_witnesses: List[Tuple[int, int]],
+    suspect_head: tuple[int, int],
+    candidate_witnesses: list[tuple[int, int]],
     *,
-    positions: Optional[torch.Tensor] = None,
-    batch_size: Optional[int] = None,
-) -> Dict[Tuple[int, int], float]:
+    positions: torch.Tensor | None = None,
+    batch_size: int | None = None,
+) -> dict[tuple[int, int], float]:
     """Score each candidate witness by how much it suppresses backup compensation.
 
     For each candidate witness w, computes:
@@ -197,7 +190,7 @@ def witness_importance_scores(
     # the ablation and producing importance ≈ 0 for the suspect head.
     candidates = [c for c in candidate_witnesses if c != suspect_head]
 
-    importance: Dict[Tuple[int, int], float] = {}
+    importance: dict[tuple[int, int], float] = {}
     for candidate in candidates:
         pinned_result = witness_pinned_ablation_scores(
             model,
@@ -223,7 +216,7 @@ def pie_denoising_scores(
     corrupted: torch.Tensor,
     metric: Metric,
     *,
-    batch_size: Optional[int] = None,
+    batch_size: int | None = None,
 ) -> PatchingResult:
     """Score each head by how much restoring it alone improves a corrupted run.
 
@@ -242,19 +235,19 @@ def pie_denoising_scores(
     n_heads = model.config.n_head
     d_head = model.config.n_embd // n_heads
 
-    batch_effects: Dict[Tuple[int, int], List[float]] = {
+    batch_effects: dict[tuple[int, int], list[float]] = {
         (layer, head): [] for layer in range(n_layers) for head in range(n_heads)
     }
 
     for _, _, clean_b, corr_b in _batches(clean, corrupted, batch_size):
         # Cache corrupted z (the reference world) and clean z (restoration source).
-        corrupted_z: Dict[int, torch.Tensor] = {}
+        corrupted_z: dict[int, torch.Tensor] = {}
         with model.trace({"input_ids": corr_b}):
             for layer in range(n_layers):
                 corrupted_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
             corrupted_logits = model.lm_head.output.save()
 
-        clean_z: Dict[int, torch.Tensor] = {}
+        clean_z: dict[int, torch.Tensor] = {}
         with model.trace({"input_ids": clean_b}):
             for layer in range(n_layers):
                 clean_z[layer] = model.transformer.h[layer].attn.c_proj.input.save()
