@@ -80,15 +80,45 @@ def _build_dataset(tokenizer):
     return ioi, abc
 
 
-def _end_metric(ioi, n):
-    end_pos = ioi.word_idx["end"].long()
+def _end_metric(ioi, n, channel="logit_diff"):
+    """Build a per-position metric closure over IOI examples.
 
-    def metric(logits):
-        return logit_diff(
-            logits[torch.arange(n), end_pos],
-            ioi.io_tokenIDs,
-            ioi.s_tokenIDs,
-        )
+    channel: which component of logit_diff to measure.
+      "logit_diff"   — logit(IO) − logit(S)  (full task metric)
+      "io"           — logit(IO) only         (isolates IO-boosting heads)
+      "s_suppression"— −logit(S) only        (isolates S-suppressing heads)
+
+    Splitting by channel separates backup name movers (IO-boosting) from
+    negative name movers like (10,7) (S-suppression) in the importance scan.
+    """
+    end_pos = ioi.word_idx["end"].long()
+    rows = torch.arange(n)
+
+    if channel == "logit_diff":
+
+        def metric(logits):
+            return logit_diff(
+                logits[rows, end_pos],
+                ioi.io_tokenIDs,
+                ioi.s_tokenIDs,
+            )
+
+    elif channel == "io":
+        io_ids = torch.tensor(ioi.io_tokenIDs)
+
+        def metric(logits):
+            pos_logits = logits[rows, end_pos]  # [N, vocab]
+            return pos_logits[rows, io_ids.to(pos_logits.device)]
+
+    elif channel == "s_suppression":
+        s_ids = torch.tensor(ioi.s_tokenIDs)
+
+        def metric(logits):
+            pos_logits = logits[rows, end_pos]  # [N, vocab]
+            return -pos_logits[rows, s_ids.to(pos_logits.device)]
+
+    else:
+        raise ValueError(f"unknown channel {channel!r}")
 
     return metric
 
@@ -107,23 +137,17 @@ def _load_path_patch_scores():
     if os.path.exists(path):
         with open(path) as f:
             for row in csv.DictReader(f):
-                scores[(int(row["layer"]), int(row["head"]))] = float(
-                    row["causal_effect"]
-                )
+                scores[(int(row["layer"]), int(row["head"]))] = float(row["causal_effect"])
     return scores
 
 
 def _print_head_table(title, nie_scores, pinned_scores, pie_scores, path_scores):
-    heads_of_interest = (
-        list(PRIMARY_NAME_MOVERS) + sorted(BACKUP_NAME_MOVERS) + list(CONTROL_HEADS)
-    )
+    heads_of_interest = list(PRIMARY_NAME_MOVERS) + sorted(BACKUP_NAME_MOVERS) + list(CONTROL_HEADS)
     print(f"\n{'=' * 70}")
     print(f"  {title}")
     print("  (NIE/Pinned/PathPatch: neg=helpful; PIE: pos=helpful)")
     print(f"{'=' * 70}")
-    print(
-        f"  {'Head':<10} {'NIE':>10} {'Pinned':>10} {'PIE':>10} {'PathPatch':>10}  Role"
-    )
+    print(f"  {'Head':<10} {'NIE':>10} {'Pinned':>10} {'PIE':>10} {'PathPatch':>10}  Role")
     print(f"  {'-' * 64}")
     for head in heads_of_interest:
         if head in PRIMARY_NAME_MOVERS:
@@ -136,10 +160,7 @@ def _print_head_table(title, nie_scores, pinned_scores, pie_scores, path_scores)
         pinned = pinned_scores.get(head, float("nan"))
         pie = pie_scores.get(head, float("nan"))
         path = path_scores.get(head, float("nan"))
-        print(
-            f"  {str(head):<10} {nie:>10.4f} {pinned:>10.4f}"
-            f" {pie:>10.4f} {path:>10.4f}  {role}"
-        )
+        print(f"  {str(head):<10} {nie:>10.4f} {pinned:>10.4f} {pie:>10.4f} {path:>10.4f}  {role}")
 
 
 def _print_importance_table(suspect, importance, k_values=(4, 8, 12)):
@@ -194,9 +215,7 @@ def _print_dn_crosscheck(pie_scores, importance, k_values=(4, 8, 12)):
 
     print(f"\n{'=' * 70}")
     print("  Per-head classification: PIE score vs. witness importance")
-    print(
-        "  PIE≈0 + high importance → preemption. PIE>0 + high importance → overdetermination."
-    )
+    print("  PIE≈0 + high importance → preemption. PIE>0 + high importance → overdetermination.")
     print(f"{'=' * 70}")
     print(f"  {'Head':<10} {'PIE score':>12} {'Importance':>12}  Classification")
     print(f"  {'-' * 52}")
@@ -209,6 +228,51 @@ def _print_dn_crosscheck(pie_scores, importance, k_values=(4, 8, 12)):
         print(f"  {str(head):<10} {pie:>12.4f} {imp:>12.4f}  {classification}")
 
 
+def _print_channel_table(suspect, importance_by_channel, k=15):
+    """Show witness rankings split by IO-boosting and S-suppression channels.
+
+    Heads that compensate via IO-boosting (backup name movers) should rank
+    high on the IO channel but not the S-suppression channel, and vice versa
+    for negative name movers like (10,7). This separates two mechanistically
+    distinct forms of downstream compensation that the full logit_diff metric
+    conflates.
+    """
+    channels = ["io", "s_suppression", "logit_diff"]
+    ranked = {
+        ch: sorted(
+            importance_by_channel[ch],
+            key=lambda h: importance_by_channel[ch][h],
+            reverse=True,
+        )
+        for ch in channels
+    }
+
+    # Union of top-k heads across all three channels.
+    candidates = set()
+    for ch in channels:
+        candidates.update(ranked[ch][:k])
+
+    # Display order: sort by IO rank (non-ranked heads go last).
+    display = sorted(
+        candidates,
+        key=lambda h: ranked["io"].index(h) if h in ranked["io"] else len(ranked["io"]),
+    )
+
+    print(f"\n{'=' * 70}")
+    print(f"  Channel decomposition for suspect {suspect}")
+    print(f"  (rank within 144; '—' = outside top {k})")
+    print(f"{'=' * 70}")
+    print(f"  {'Head':<10} {'IO-boost':>10} {'S-suppress':>12} {'Full':>8}  Backup?")
+    print(f"  {'-' * 50}")
+    for head in display:
+        is_backup = "YES" if head in BACKUP_NAME_MOVERS else "no"
+        ranks = []
+        for ch in channels:
+            idx = ranked[ch].index(head) if head in ranked[ch] else None
+            ranks.append(str(idx + 1) if idx is not None else "—")
+        print(f"  {str(head):<10} {ranks[0]:>10} {ranks[1]:>12} {ranks[2]:>8}  {is_backup}")
+
+
 def run():
     torch.set_grad_enabled(False)
     model = load_model()
@@ -216,7 +280,7 @@ def run():
     N = len(ioi)
     clean_toks = ioi.toks.long()
     corrupted_toks = abc.toks.long()
-    metric = _end_metric(ioi, N)
+    metric = _end_metric(ioi, N, channel="logit_diff")
     n_layers = len(model.transformer.h)
     n_heads = model.config.n_head
     end_pos = ioi.word_idx["end"].long()
@@ -303,6 +367,42 @@ def run():
     # --- Comparison 3 & 4: Dn cross-check and preemption classification ---
     # Use (9,9) as representative primary — strongest NIE→Pinned signal.
     _print_dn_crosscheck(pie_result.scores, importance_by_suspect[(9, 9)])
+
+    # --- Comparison 5: channel decomposition for (9,9) ---
+    # Determines whether top-ranked witnesses compensate via IO-boosting
+    # (backup name movers) or S-suppression (NNMs such as (10,7)).
+    # logit_diff = logit(IO) − logit(S) conflates both channels; splitting
+    # them separates mechanistically distinct compensation pathways.
+    print("\nRunning IO-channel importance scan for suspect (9, 9)...")
+    importance_99_io = witness_importance_scores(
+        model,
+        clean_toks,
+        corrupted_toks,
+        _end_metric(ioi, N, channel="io"),
+        suspect_head=(9, 9),
+        candidate_witnesses=all_heads,
+        positions=end_pos,
+    )
+
+    print("Running S-suppression importance scan for suspect (9, 9)...")
+    importance_99_s = witness_importance_scores(
+        model,
+        clean_toks,
+        corrupted_toks,
+        _end_metric(ioi, N, channel="s_suppression"),
+        suspect_head=(9, 9),
+        candidate_witnesses=all_heads,
+        positions=end_pos,
+    )
+
+    _print_channel_table(
+        (9, 9),
+        {
+            "io": importance_99_io,
+            "s_suppression": importance_99_s,
+            "logit_diff": importance_by_suspect[(9, 9)],
+        },
+    )
 
 
 if __name__ == "__main__":
